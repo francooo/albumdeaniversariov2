@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Redirecionando...</title>
+  <script>
+    var path = window.location.pathname;
+    var search = window.location.search;
+    var hash = window.location.hash;
+    sessionStorage.setItem('spa_redirect', path + search + hash);
+    window.location.replace('/');
+  </script>
+</head>
+<body></body>
+</html>
