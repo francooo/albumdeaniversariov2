@@ -1,416 +1,246 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AppLayout } from '../components';
-import { 
-  getUserById,
-  updatePrivacySettings, 
-  requestDataExport, 
-  requestAccountDeletion,
-  logAuditEvent,
-  AuditActions
-} from '../services/api';
+import { Check, Download, ShieldCheck } from 'lucide-react';
+import AppLayout from '../components/AppLayout';
 import ConfirmationModal from '../components/ConfirmationModal';
+import { Button, Card, PageLoader, Toggle } from '../components/ui';
+import { getUserById, getUserStats, updatePrivacySettings, requestDataExport, requestAccountDeletion, logAuditEvent, AuditActions } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
+import { plural } from '../lib/format';
 
-interface PrivacySettings {
+type Visibility = 'private' | 'link' | 'public';
+
+interface Settings {
   is_public_profile: boolean;
   albums_public: boolean;
   show_email: boolean;
   email_notifications: boolean;
   marketing_emails: boolean;
+  default_album_visibility: Visibility;
 }
+
+const TOGGLES: { key: Exclude<keyof Settings, 'default_album_visibility'>; title: string; text: string; audit: (v: boolean) => string }[] = [
+  { key: 'is_public_profile', title: 'Perfil público', text: 'Seu nome e foto aparecem para outras pessoas.', audit: () => AuditActions.PROFILE_VISIBILITY_CHANGED },
+  { key: 'albums_public', title: 'Álbuns públicos', text: 'Qualquer pessoa com o link pode abrir seus álbuns.', audit: () => AuditActions.ALBUMS_VISIBILITY_CHANGED },
+  { key: 'show_email', title: 'Mostrar e-mail', text: 'Exibe seu e-mail no seu perfil.', audit: () => AuditActions.EMAIL_VISIBILITY_CHANGED },
+  { key: 'email_notifications', title: 'Notificações por e-mail', text: 'Avisamos quando alguém comenta ou compartilha.', audit: () => AuditActions.EMAIL_NOTIFICATIONS_CHANGED },
+  {
+    key: 'marketing_emails',
+    title: 'E-mails de marketing',
+    text: 'Novidades e dicas do Memórias, de vez em quando.',
+    audit: v => (v ? AuditActions.MARKETING_EMAILS_OPT_IN : AuditActions.MARKETING_EMAILS_OPT_OUT),
+  },
+];
+
+const VISIBILITY: { value: Visibility; title: string; text: string }[] = [
+  { value: 'private', title: 'Só eu', text: 'Ninguém além de você vê os álbuns.' },
+  { value: 'link', title: 'Quem tem o link', text: 'Só quem recebe o link consegue abrir.' },
+  { value: 'public', title: 'Público', text: 'Qualquer pessoa pode encontrar seus álbuns.' },
+];
+
+const SUMMARY: Record<Visibility, string> = {
+  private: 'Seus álbuns novos começam privados. Você escolhe quando compartilhar.',
+  link: 'Seus álbuns são privados. Só quem recebe o link consegue ver.',
+  public: 'Seus álbuns novos começam públicos. Você pode fechar cada um depois.',
+};
 
 export default function Privacy() {
   const navigate = useNavigate();
-  const { user: authUser, logout } = useAuth();
-  const [userId, setUserId] = useState<string | null>(null);
-  const [settings, setSettings] = useState<PrivacySettings>({
-    is_public_profile: true,
-    albums_public: false,
-    show_email: false,
-    email_notifications: true,
-    marketing_emails: false
-  });
-  const [originalSettings, setOriginalSettings] = useState<PrivacySettings>(settings);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  
-  // Modal states
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
+  const toast = useToast();
+  const { user, logout } = useAuth();
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [original, setOriginal] = useState<Settings | null>(null);
+  const [counts, setCounts] = useState({ albums: 0, photos: 0, videos: 0 });
+  const [saving, setSaving] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    loadSettings();
-  }, []);
+    if (!user) return;
+    (async () => {
+      try {
+        const [u, stats] = await Promise.all([getUserById(user.id), getUserStats(user.id)]);
+        const src = u ?? user;
+        const s: Settings = {
+          is_public_profile: src.is_public_profile ?? false,
+          albums_public: src.albums_public ?? false,
+          show_email: src.show_email ?? false,
+          email_notifications: src.email_notifications ?? true,
+          marketing_emails: src.marketing_emails ?? false,
+          default_album_visibility: (src.default_album_visibility as Visibility) || 'link',
+        };
+        setSettings(s);
+        setOriginal(s);
+        setCounts({ albums: stats.totalAlbums, photos: stats.totalPhotos, videos: stats.totalVideos });
+      } catch (err) {
+        console.error('Error loading privacy settings:', err);
+        toast.error('Não foi possível carregar suas preferências.');
+      }
+    })();
+  }, [user, toast]);
 
-  const loadSettings = async () => {
-    if (!authUser) {
-      setIsLoading(false);
-      return;
-    }
+  const dirty = !!settings && !!original && JSON.stringify(settings) !== JSON.stringify(original);
+
+  const save = async () => {
+    if (!user || !settings || !original) return;
+    setSaving(true);
     try {
-      const user = await getUserById(authUser.id);
-      const resolvedUser = user || authUser;
-      
-      setUserId(resolvedUser.id);
-      const loadedSettings = {
-        is_public_profile: resolvedUser.is_public_profile ?? true,
-        albums_public: resolvedUser.albums_public ?? false,
-        show_email: resolvedUser.show_email ?? false,
-        email_notifications: resolvedUser.email_notifications ?? true,
-        marketing_emails: resolvedUser.marketing_emails ?? false
-      };
-      setSettings(loadedSettings);
-      setOriginalSettings(loadedSettings);
-    } catch (error) {
-      console.error('Error loading settings, using cached user:', error);
-      setUserId(authUser.id);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleToggle = (key: keyof PrivacySettings) => {
-    setSettings(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const handleSave = async () => {
-    if (!userId) return;
-
-    setIsSaving(true);
-    setMessage(null);
-
-    try {
-      // Find changed settings for audit logging
-      const changedSettings: Partial<PrivacySettings> = {};
-      (Object.keys(settings) as Array<keyof PrivacySettings>).forEach(key => {
-        if (settings[key] !== originalSettings[key]) {
-          changedSettings[key] = settings[key];
+      await updatePrivacySettings(user.id, settings);
+      for (const t of TOGGLES) {
+        if (settings[t.key] !== original[t.key]) {
+          await logAuditEvent(user.id, t.audit(settings[t.key]), { new_value: settings[t.key] }).catch(() => {});
         }
-      });
-
-      await updatePrivacySettings(userId, settings);
-      
-      // Log audit events for changed settings
-      if (changedSettings.is_public_profile !== undefined) {
-        await logAuditEvent(userId, AuditActions.PROFILE_VISIBILITY_CHANGED, {
-          new_value: changedSettings.is_public_profile
-        });
       }
-      if (changedSettings.albums_public !== undefined) {
-        await logAuditEvent(userId, AuditActions.ALBUMS_VISIBILITY_CHANGED, {
-          new_value: changedSettings.albums_public
-        });
-      }
-      if (changedSettings.show_email !== undefined) {
-        await logAuditEvent(userId, AuditActions.EMAIL_VISIBILITY_CHANGED, {
-          new_value: changedSettings.show_email
-        });
-      }
-      if (changedSettings.email_notifications !== undefined) {
-        await logAuditEvent(userId, AuditActions.EMAIL_NOTIFICATIONS_CHANGED, {
-          new_value: changedSettings.email_notifications
-        });
-      }
-      if (changedSettings.marketing_emails !== undefined) {
-        await logAuditEvent(userId, 
-          changedSettings.marketing_emails ? AuditActions.MARKETING_EMAILS_OPT_IN : AuditActions.MARKETING_EMAILS_OPT_OUT,
-          { timestamp: new Date().toISOString() }
-        );
-      }
-
-      setOriginalSettings(settings);
-      setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' });
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao salvar configurações' });
+      setOriginal(settings);
+      toast.success('Configurações salvas');
+    } catch {
+      toast.error('Não foi possível salvar. Tente de novo.');
     } finally {
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
-  const handleDataExport = async () => {
-    if (!userId) return;
-    setIsExporting(true);
-    
+  const exportData = async () => {
+    if (!user) return;
+    setExporting(true);
     try {
-      const result = await requestDataExport(userId);
-      await logAuditEvent(userId, AuditActions.DATA_EXPORT_REQUESTED, {
-        request_id: result.requestId
-      });
-      setShowExportModal(false);
-      setMessage({ type: 'success', text: result.message });
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao solicitar exportação de dados' });
+      const result = await requestDataExport(user.id);
+      await logAuditEvent(user.id, AuditActions.DATA_EXPORT_REQUESTED, { request_id: result.requestId }).catch(() => {});
+      setExportOpen(false);
+      toast.success(result.message);
+    } catch {
+      toast.error('Não foi possível pedir a cópia dos dados.');
     } finally {
-      setIsExporting(false);
+      setExporting(false);
     }
   };
 
-  const handleDeleteAccount = async (confirmationValue: string) => {
-    if (!userId) return;
-    setIsDeleting(true);
-    
+  const deleteAccount = async () => {
+    if (!user) return;
+    setDeleting(true);
     try {
-      await requestAccountDeletion(userId, 'text');
-      await logAuditEvent(userId, AuditActions.ACCOUNT_DELETION_REQUESTED, {
-        confirmation_method: 'text',
-        grace_period_days: 30
-      });
-      
+      await requestAccountDeletion(user.id, 'text');
+      await logAuditEvent(user.id, AuditActions.ACCOUNT_DELETION_REQUESTED, { confirmation_method: 'text', grace_period_days: 30 }).catch(() => {});
       logout();
       navigate('/login');
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao solicitar exclusão da conta' });
-      setIsDeleting(false);
-      setShowDeleteModal(false);
+    } catch {
+      toast.error('Não foi possível excluir a conta.');
+      setDeleting(false);
     }
   };
 
-  if (isLoading) {
+  if (!settings) {
     return (
-      <AppLayout maxWidth="max-w-4xl">
-        <div className="flex items-center justify-center h-64">
-          <div className="flex items-center gap-3">
-            <span className="material-symbols-outlined text-4xl text-primary animate-spin">progress_activity</span>
-            <span className="text-lg text-slate-600 dark:text-slate-400">Carregando...</span>
-          </div>
-        </div>
+      <AppLayout activeOverride="/conta">
+        <PageLoader />
       </AppLayout>
     );
   }
 
   return (
-    <AppLayout maxWidth="max-w-4xl">
-      {/* Page Header */}
-      <div className="mb-6 md:mb-8">
-        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-white">Privacidade</h1>
-        <p className="text-sm text-slate-500 mt-1">Controle suas configurações de privacidade</p>
-      </div>
+    <AppLayout activeOverride="/conta">
+      <h1 className="font-display text-[30px] font-semibold text-ink sm:text-[32px]">Privacidade</h1>
+      <p className="mt-1 text-sm text-muted">Você decide quem vê cada memória.</p>
 
-      <div>
-        {/* Message */}
-        {message && (
-          <div className={`mb-6 p-4 rounded-lg ${
-            message.type === 'success' 
-              ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800' 
-              : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
-          }`}>
-            <p className={`text-sm flex items-center gap-2 ${
-              message.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-            }`}>
-              <span className="material-symbols-outlined text-lg">
-                {message.type === 'success' ? 'check_circle' : 'error'}
+      <div className="mt-6 grid gap-8 lg:grid-cols-[600px_1fr] lg:gap-10">
+        <div className="space-y-5">
+          <Card tone="sand" className="rounded-[26px] px-6 py-2">
+            <ul className="divide-y divide-divider/70">
+              {TOGGLES.map(t => (
+                <li key={t.key} className="flex items-center justify-between gap-6 py-4">
+                  <div>
+                    <p id={`lbl-${t.key}`} className="font-bold text-ink">
+                      {t.title}
+                    </p>
+                    <p className="text-sm text-muted">{t.text}</p>
+                  </div>
+                  <Toggle checked={settings[t.key]} onChange={v => setSettings(s => ({ ...s!, [t.key]: v }))} label={t.title} />
+                </li>
+              ))}
+            </ul>
+          </Card>
+
+          <div className="flex items-center gap-3 rounded-[20px] border border-divider bg-paper px-5 py-4">
+            <ShieldCheck className="size-[22px] shrink-0 text-sage-text" aria-hidden />
+            <p className="text-sm text-ink">{SUMMARY[settings.default_album_visibility]}</p>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Button size="lg" onClick={save} loading={saving} disabled={!dirty}>
+              Salvar configurações
+            </Button>
+            {dirty && <span className="text-sm text-muted">Alterações não salvas</span>}
+          </div>
+        </div>
+
+        <div>
+          <h2 className="font-display text-xl font-semibold text-ink">Quem pode ver</h2>
+          <p className="text-sm text-muted">Padrão aplicado a novos álbuns.</p>
+          <div role="radiogroup" aria-label="Quem pode ver os novos álbuns" className="mt-3 space-y-2">
+            {VISIBILITY.map(v => {
+              const selected = settings.default_album_visibility === v.value;
+              return (
+                <button
+                  key={v.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setSettings(s => ({ ...s!, default_album_visibility: v.value }))}
+                  className={`flex min-h-[54px] w-full items-center justify-between gap-4 rounded-[18px] px-5 py-2 text-left transition-colors ${
+                    selected ? 'border-2 border-terra bg-sand' : 'border border-divider bg-paper hover:bg-sand/40'
+                  }`}
+                >
+                  <span>
+                    <span className="block text-sm font-bold text-ink">{v.title}</span>
+                    <span className="text-sm text-muted">{v.text}</span>
+                  </span>
+                  {selected && <Check className="size-5 shrink-0 text-terra-text" aria-hidden />}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="mt-6 text-sm text-muted">Dados da conta</p>
+          <div className="mt-2 space-y-2">
+            <button type="button" onClick={() => setExportOpen(true)} className="flex w-full items-center justify-between gap-4 rounded-[18px] border border-divider bg-paper px-5 py-3 text-left hover:bg-sand/40">
+              <span>
+                <span className="block text-sm font-bold text-ink">Baixar meus dados</span>
+                <span className="text-sm text-muted">Solicitar uma cópia dos seus dados</span>
               </span>
-              {message.text}
-            </p>
-          </div>
-        )}
-
-        {/* Privacy Settings */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 mb-6">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-primary">shield</span>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Configurações de Privacidade</h2>
-            </div>
-          </div>
-          
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {/* Profile Public */}
-            <div className="p-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">Perfil Público</p>
-                <p className="text-sm text-slate-500">Permitir que outros usuários vejam seu perfil</p>
-              </div>
-              <button
-                onClick={() => handleToggle('is_public_profile')}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  settings.is_public_profile ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              >
-                <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.is_public_profile ? 'translate-x-8' : 'translate-x-1'
-                }`} />
-              </button>
-            </div>
-
-            {/* Albums Public */}
-            <div className="p-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">Álbuns Públicos</p>
-                <p className="text-sm text-slate-500">Permitir que seus álbuns sejam descobertos por outros</p>
-              </div>
-              <button
-                onClick={() => handleToggle('albums_public')}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  settings.albums_public ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              >
-                <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.albums_public ? 'translate-x-8' : 'translate-x-1'
-                }`} />
-              </button>
-            </div>
-
-            {/* Show Email */}
-            <div className="p-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">Mostrar E-mail</p>
-                <p className="text-sm text-slate-500">Exibir seu e-mail no perfil público</p>
-              </div>
-              <button
-                onClick={() => handleToggle('show_email')}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  settings.show_email ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              >
-                <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.show_email ? 'translate-x-8' : 'translate-x-1'
-                }`} />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Notification Settings */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 mb-6">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-primary">notifications</span>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Notificações</h2>
-            </div>
-          </div>
-          
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {/* Email Notifications */}
-            <div className="p-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">Notificações por E-mail</p>
-                <p className="text-sm text-slate-500">Receber atualizações importantes por e-mail</p>
-              </div>
-              <button
-                onClick={() => handleToggle('email_notifications')}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  settings.email_notifications ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              >
-                <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.email_notifications ? 'translate-x-8' : 'translate-x-1'
-                }`} />
-              </button>
-            </div>
-
-            {/* Marketing Emails */}
-            <div className="p-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">E-mails de Marketing</p>
-                <p className="text-sm text-slate-500">Receber novidades, dicas e promoções</p>
-              </div>
-              <button
-                onClick={() => handleToggle('marketing_emails')}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  settings.marketing_emails ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              >
-                <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.marketing_emails ? 'translate-x-8' : 'translate-x-1'
-                }`} />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Data & Security */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 mb-6">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-primary">security</span>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Dados e Segurança</h2>
-            </div>
-          </div>
-          
-          <div className="p-6 space-y-4">
-            <button 
-              onClick={() => setShowExportModal(true)}
-              className="w-full flex items-center justify-between p-4 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-left"
-            >
-              <div className="flex items-center gap-3">
-                <span className="material-symbols-outlined text-slate-500">download</span>
-                <div>
-                  <p className="font-medium text-slate-900 dark:text-white">Baixar Meus Dados</p>
-                  <p className="text-sm text-slate-500">Solicitar uma cópia dos seus dados</p>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-slate-400">chevron_right</span>
+              <Download className="size-5 shrink-0 text-muted" aria-hidden />
             </button>
-
-            <button 
-              onClick={() => setShowDeleteModal(true)}
-              className="w-full flex items-center justify-between p-4 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-left"
-            >
-              <div className="flex items-center gap-3">
-                <span className="material-symbols-outlined text-red-500">delete_forever</span>
-                <div>
-                  <p className="font-medium text-red-600 dark:text-red-400">Excluir Minha Conta</p>
-                  <p className="text-sm text-slate-500">Remover permanentemente sua conta e dados</p>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-slate-400">chevron_right</span>
+            <button type="button" onClick={() => setDeleteOpen(true)} className="w-full rounded-[18px] bg-terra-soft px-5 py-3 text-left hover:bg-[#EFD3BC]">
+              <span className="block text-sm font-bold text-terra-text">Excluir minha conta</span>
+              <span className="text-sm text-terra-text">Remover permanentemente sua conta e dados</span>
             </button>
           </div>
-        </div>
-
-        {/* Save Button */}
-        <div className="flex justify-end">
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="flex items-center gap-2 px-6 py-3 bg-primary text-background-dark font-bold rounded-lg hover:brightness-110 transition-all disabled:opacity-50"
-          >
-            {isSaving ? (
-              <>
-                <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                Salvando...
-              </>
-            ) : (
-              <>
-                <span className="material-symbols-outlined">save</span>
-                Salvar Configurações
-              </>
-            )}
-          </button>
         </div>
       </div>
 
-      {/* Data Export Confirmation Modal */}
       <ConfirmationModal
-        isOpen={showExportModal}
-        onClose={() => setShowExportModal(false)}
-        onConfirm={handleDataExport}
-        title="Baixar Meus Dados"
-        message="Você está solicitando uma cópia de todos os seus dados. Este processo pode levar até 24 horas. Os dados serão enviados para seu e-mail cadastrado."
-        confirmType="text"
-        confirmValue="CONFIRMAR"
-        confirmLabel="Solicitar Dados"
-        isLoading={isExporting}
+        isOpen={exportOpen}
+        onClose={() => setExportOpen(false)}
+        onConfirm={exportData}
+        isLoading={exporting}
+        confirmType="none"
         danger={false}
+        title="Baixar meus dados?"
+        confirmLabel="Solicitar cópia"
+        message="Vamos preparar uma cópia dos seus dados e enviar para o seu e-mail em até 24 horas."
       />
-
-      {/* Account Deletion Confirmation Modal */}
       <ConfirmationModal
-        isOpen={showDeleteModal}
-        onClose={() => setShowDeleteModal(false)}
-        onConfirm={handleDeleteAccount}
-        title="Excluir Minha Conta"
-        message="ATENÇÃO: Esta ação é irreversível! Sua conta será desativada imediatamente e todos os dados serão permanentemente excluídos após 30 dias. Durante este período, você pode cancelar a exclusão fazendo login novamente."
+        isOpen={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={deleteAccount}
+        isLoading={deleting}
         confirmType="text"
         confirmValue="EXCLUIR"
-        confirmLabel="Excluir Conta"
-        isLoading={isDeleting}
-        danger={true}
+        title="Excluir minha conta?"
+        confirmLabel="Excluir conta"
+        message={`Seus ${plural(counts.albums, 'álbum', 'álbuns')}, ${plural(counts.photos, 'foto')} e ${plural(counts.videos, 'vídeo')} serão removidos para sempre. A exclusão é concluída em até 30 dias.`}
       />
     </AppLayout>
   );

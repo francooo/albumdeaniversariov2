@@ -26,12 +26,32 @@ export interface ShareView {
 
 // Flag to track if tables have been initialized
 let tablesInitialized = false;
-let migrationsStarted = false;
+let migrationsPromise: Promise<void> | null = null;
 
-// Run column migrations in parallel (non-blocking, fire-and-forget)
+/**
+ * Aguarda as migrações de coluna (idempotentes). Funções que leem/gravam colunas
+ * novas chamam isto antes, para não haver corrida na primeira carga do app.
+ */
+export function migrationsReady(): Promise<void> {
+  if (!migrationsPromise) runColumnMigrations();
+  return migrationsPromise ?? Promise.resolve();
+}
+
+// Muda quando novas migrações forem adicionadas, para rodarem de novo
+const MIGRATIONS_KEY = 'memorias_migrations_v2';
+
+// Run column migrations in one batched request (non-blocking, fire-and-forget)
 export function runColumnMigrations(): void {
-  if (migrationsStarted || !sql) return;
-  migrationsStarted = true;
+  if (migrationsPromise || !sql) return;
+
+  try {
+    if (sessionStorage.getItem(MIGRATIONS_KEY)) {
+      migrationsPromise = Promise.resolve();
+      return;
+    }
+  } catch {
+    /* sem sessionStorage: roda as migrações */
+  }
 
   const migrations = [
     sql`ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS public_name VARCHAR(255)`,
@@ -51,11 +71,35 @@ export function runColumnMigrations(): void {
     sql`ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
     sql`CREATE UNIQUE INDEX IF NOT EXISTS users_google_id_idx ON users (google_id) WHERE google_id IS NOT NULL`,
     sql`ALTER TABLE IF EXISTS sections ADD COLUMN IF NOT EXISTS image_url TEXT`,
+    // Redesign "Memórias" (handoff): ocasião, data, layout/estilo do livro, capa e visibilidade padrão
+    sql`ALTER TABLE IF EXISTS albums ADD COLUMN IF NOT EXISTS event_date DATE`,
+    sql`ALTER TABLE IF EXISTS albums ADD COLUMN IF NOT EXISTS occasion VARCHAR(30)`,
+    sql`ALTER TABLE IF EXISTS albums ADD COLUMN IF NOT EXISTS layout VARCHAR(20) DEFAULT 'two'`,
+    sql`ALTER TABLE IF EXISTS albums ADD COLUMN IF NOT EXISTS style VARCHAR(20) DEFAULT 'jardim'`,
+    sql`ALTER TABLE IF EXISTS media ADD COLUMN IF NOT EXISTS is_cover BOOLEAN DEFAULT false`,
+    sql`ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS default_album_visibility VARCHAR(10) DEFAULT 'link'`,
+    sql`CREATE INDEX IF NOT EXISTS idx_media_album ON media(album_id)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_media_section ON media(section_id)`,
   ];
 
-  Promise.all(migrations)
-    .then(() => console.log('Column migrations applied successfully'))
-    .catch((err) => console.warn('Column migrations (some may already exist):', err?.message));
+  // Uma única requisição HTTP em vez de ~25 em paralelo (evita estourar conexões no celular)
+  const db = sql;
+  migrationsPromise = db
+    .transaction(migrations)
+    .then(() => {
+      try {
+        sessionStorage.setItem(MIGRATIONS_KEY, '1');
+      } catch {
+        /* opcional */
+      }
+    })
+    .catch(async err => {
+      // Se o lote falhar (ex.: permissão em um comando), tenta um a um para aplicar o que der
+      console.warn('Batched migrations failed, retrying individually:', err?.message);
+      const results = await Promise.allSettled(migrations.map(q => q));
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length) console.warn(`${failed.length} column migrations failed`);
+    });
 }
 
 // Initialize sharing tables if they don't exist
@@ -212,6 +256,7 @@ export async function validateShareToken(token: string): Promise<{
   // Get album data — only public-safe fields, no internal identifiers
   let albumResult: any[];
   try {
+    await migrationsReady();
     albumResult = await sql`
       SELECT 
         a.id,
@@ -219,6 +264,13 @@ export async function validateShareToken(token: string): Promise<{
         a.subtitle,
         a.description,
         a.cover_image_url,
+        a.cover_thumbnail_url,
+        a.theme,
+        a.layout,
+        a.style,
+        a.event_date,
+        a.total_photos,
+        a.total_videos,
         a.created_at,
         COALESCE(NULLIF(u.public_name, ''), u.name) AS owner_name
       FROM albums a

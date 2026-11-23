@@ -3,20 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import { AuthProvider } from './contexts/AuthContext';
+import { useEffect, type ReactNode } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import { runColumnMigrations } from './services/api/shares';
 import Login from './pages/Login';
 import Register from './pages/Register';
-import Cover from './pages/Cover';
 import Viewer from './pages/Viewer';
 import PublicAlbumViewer from './pages/PublicAlbumViewer';
-import Dashboard from './pages/Dashboard';
 import AlbumsList from './pages/AlbumsList';
+import AlbumEdit from './pages/AlbumEdit';
+import AlbumCustomize from './pages/AlbumCustomize';
 import Overview from './pages/Overview';
-import Uploads from './pages/Uploads';
 import Account from './pages/Account';
 import Privacy from './pages/Privacy';
 import NotFound from './pages/NotFound';
@@ -33,6 +33,22 @@ function SpaRedirectHandler() {
   return null;
 }
 
+/** Login/cadastro: quem já está logado vai direto para o Início. */
+function GuestOnly({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (user && !sessionStorage.getItem('pending_album_token')) return <Navigate to="/inicio" replace />;
+  return <>{children}</>;
+}
+
+/** Redireciona rotas antigas com parâmetro (ex.: /dashboard/:id → /albums/:id). */
+function RedirectWithId({ to }: { to: (id: string) => string }) {
+  const { albumId } = useParams();
+  return <Navigate to={albumId ? to(albumId) : '/albums'} replace />;
+}
+
+const guard = (el: ReactNode) => <ProtectedRoute>{el}</ProtectedRoute>;
+
 export default function App() {
   useEffect(() => {
     runColumnMigrations();
@@ -40,25 +56,37 @@ export default function App() {
 
   return (
     <AuthProvider>
-      <Router>
-        <SpaRedirectHandler />
-        <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/cover" element={<Cover />} />
-          <Route path="/viewer/:albumId" element={<Viewer />} />
-          <Route path="/album/publico/:token" element={<PublicAlbumViewer />} />
-          <Route path="/albums" element={<ProtectedRoute><AlbumsList /></ProtectedRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/dashboard/:albumId" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/overview" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
-          <Route path="/uploads" element={<ProtectedRoute><Uploads /></ProtectedRoute>} />
-          <Route path="/account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
-          <Route path="/privacy" element={<ProtectedRoute><Privacy /></ProtectedRoute>} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </Router>
+      <ToastProvider>
+        <Router>
+          <SpaRedirectHandler />
+          <Routes>
+            <Route path="/" element={<Navigate to="/inicio" replace />} />
+            <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
+            <Route path="/register" element={<GuestOnly><Register /></GuestOnly>} />
+
+            <Route path="/inicio" element={guard(<Overview />)} />
+            <Route path="/albums" element={guard(<AlbumsList />)} />
+            <Route path="/albums/:albumId" element={guard(<AlbumEdit />)} />
+            <Route path="/albums/:albumId/personalizar" element={guard(<AlbumCustomize />)} />
+            <Route path="/livro/:albumId" element={guard(<Viewer />)} />
+            <Route path="/conta" element={guard(<Account />)} />
+            <Route path="/privacidade" element={guard(<Privacy />)} />
+            <Route path="/album/publico/:token" element={<PublicAlbumViewer />} />
+
+            {/* Rotas antigas */}
+            <Route path="/overview" element={<Navigate to="/inicio" replace />} />
+            <Route path="/account" element={<Navigate to="/conta" replace />} />
+            <Route path="/privacy" element={<Navigate to="/privacidade" replace />} />
+            <Route path="/uploads" element={<Navigate to="/albums" replace />} />
+            <Route path="/cover" element={<Navigate to="/albums" replace />} />
+            <Route path="/dashboard" element={<Navigate to="/albums" replace />} />
+            <Route path="/dashboard/:albumId" element={<RedirectWithId to={id => `/albums/${id}`} />} />
+            <Route path="/viewer/:albumId" element={<RedirectWithId to={id => `/livro/${id}`} />} />
+
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Router>
+      </ToastProvider>
     </AuthProvider>
   );
 }

@@ -10,3 +10,6 @@ coverage/
 replit.nix
 attached_assets/
 .local/
+
+# Handoff de design (arquivo grande, fica fora do repositório)
+design/*.zip

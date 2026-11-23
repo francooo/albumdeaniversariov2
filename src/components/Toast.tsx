@@ -1,79 +1,80 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { CircleCheck, CircleAlert, Info, TriangleAlert, X } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
 interface ToastProps {
-  message: string;
+  message: ReactNode;
   type?: ToastType;
   duration?: number;
+  action?: { label: string; onClick: () => void };
   onClose: () => void;
 }
 
-export function Toast({ message, type = 'info', duration = 3000, onClose }: ToastProps) {
+const icons = { success: CircleCheck, error: CircleAlert, info: Info, warning: TriangleAlert };
+const tones: Record<ToastType, string> = {
+  success: 'bg-sage-soft text-ink',
+  error: 'bg-terra-soft text-ink',
+  info: 'bg-paper text-ink border border-divider',
+  warning: 'bg-terra-soft text-ink',
+};
+const iconTones: Record<ToastType, string> = {
+  success: 'text-sage-text',
+  error: 'text-terra-text',
+  info: 'text-muted',
+  warning: 'text-terra-text',
+};
+
+export function Toast({ message, type = 'info', duration = 3500, action, onClose }: ToastProps) {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    // Trigger enter animation
-    const enterTimeout = setTimeout(() => setIsVisible(true), 10);
-
-    // Auto close
-    const closeTimeout = setTimeout(() => {
+    const enter = setTimeout(() => setIsVisible(true), 10);
+    const close = setTimeout(() => {
       setIsVisible(false);
-      setTimeout(onClose, 300); // Wait for exit animation
+      setTimeout(onClose, 250);
     }, duration);
-
     return () => {
-      clearTimeout(enterTimeout);
-      clearTimeout(closeTimeout);
+      clearTimeout(enter);
+      clearTimeout(close);
     };
   }, [duration, onClose]);
 
-  const icons = {
-    success: 'check_circle',
-    error: 'error',
-    info: 'info',
-    warning: 'warning'
-  };
-
-  const styles = {
-    success: 'bg-green-500 text-white',
-    error: 'bg-red-500 text-white',
-    info: 'bg-blue-500 text-white',
-    warning: 'bg-amber-500 text-white'
-  };
+  const Icon = icons[type];
 
   return (
     <div
-      className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg transform transition-all duration-300 ${
-        styles[type]
-      } ${isVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0'}`}
+      role={type === 'error' ? 'alert' : 'status'}
+      className={`pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-[20px] px-4 py-3 transition-all duration-200 ${tones[type]} ${
+        isVisible ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0'
+      }`}
     >
-      <span className="material-symbols-outlined">{icons[type]}</span>
-      <span className="text-sm font-medium">{message}</span>
+      <Icon className={`size-5 shrink-0 ${iconTones[type]}`} aria-hidden />
+      <span className="flex-1 text-sm font-semibold">{message}</span>
+      {action && (
+        <button type="button" onClick={action.onClick} className="shrink-0 rounded-full px-3 py-1.5 text-sm font-bold text-terra-text hover:bg-paper/60">
+          {action.label}
+        </button>
+      )}
       <button
+        type="button"
+        aria-label="Fechar aviso"
         onClick={() => {
           setIsVisible(false);
-          setTimeout(onClose, 300);
+          setTimeout(onClose, 250);
         }}
-        className="ml-2 p-1 rounded hover:bg-white/20 transition-colors"
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-paper/60"
       >
-        <span className="material-symbols-outlined text-sm">close</span>
+        <X className="size-4" />
       </button>
     </div>
   );
 }
 
-// Toast container to manage multiple toasts
-import type { ReactNode } from 'react';
-
-interface ToastContainerProps {
-  children: ReactNode;
-}
-
-export function ToastContainer({ children }: ToastContainerProps) {
+export function ToastContainer({ children }: { children: ReactNode }) {
   return (
-    <div className="fixed bottom-0 right-0 z-50 p-6 space-y-3 pointer-events-none">
-      <div className="pointer-events-auto">{children}</div>
+    <div className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 sm:bottom-6 sm:items-end sm:px-6">
+      {children}
     </div>
   );
 }

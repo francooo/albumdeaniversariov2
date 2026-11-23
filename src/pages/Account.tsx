@@ -1,470 +1,289 @@
-import { useState, useEffect, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { getUserById, updateUserProfile, changePassword, updateUserPlan } from '../services/api';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useLocation } from 'react-router-dom';
+import { Check } from 'lucide-react';
+import AppLayout from '../components/AppLayout';
+import { Avatar, Badge, Button, Card, Field, Input, PageLoader, PasswordInput } from '../components/ui';
+import { changePassword, getAlbumQuota, getUserById, updateUserPlan, updateUserProfile } from '../services/api';
 import type { User } from '../services/api/users';
 import { useAuth } from '../contexts/AuthContext';
-import { AppLayout } from '../components';
+import { useToast } from '../contexts/ToastContext';
+import { PLANS, normalizePlan, type PlanId } from '../lib/plans';
+import { formatLongDate, toInputDate } from '../lib/format';
+import { ACCEPT_ATTR, compressSingle, validateImageFile } from '../lib/imageCompress';
 
 export default function Account() {
-  const navigate = useNavigate();
-  const { user: authUser, updateUser: updateAuthUser, logout } = useAuth();
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const { user: authUser, updateUser } = useAuth();
+  const toast = useToast();
+  const location = useLocation();
+  const avatarInput = useRef<HTMLInputElement>(null);
 
-  // Form fields
+  const [user, setUser] = useState<(User & { password_hash?: string | null; google_id?: string | null }) | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [albumCount, setAlbumCount] = useState(0);
+
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [birthDate, setBirthDate] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
 
-  // Password fields
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
-  // Plan
-  const [isUpdatingPlan, setIsUpdatingPlan] = useState(false);
+  const [planBusy, setPlanBusy] = useState(false);
 
   useEffect(() => {
-    loadUser();
-  }, []);
-
-  const loadUser = async () => {
-    if (!authUser) {
-      setIsLoading(false);
-      return;
-    }
-    try {
-      const userData = await getUserById(authUser.id);
-      if (userData) {
-        setUser(userData);
-        setName(userData.name || '');
-        setEmail(userData.email || '');
-        setPhone(userData.phone || '');
-        setBirthDate(userData.birth_date ? userData.birth_date.split('T')[0] : '');
-      } else {
-        // Fallback to context user data if DB returns nothing
+    if (!authUser) return;
+    (async () => {
+      try {
+        const [u, quota] = await Promise.all([getUserById(authUser.id), getAlbumQuota(authUser.id)]);
+        const data = (u ?? authUser) as typeof user & object;
+        setUser(data);
+        setAlbumCount(quota.used);
+        setName(data.name || '');
+        setEmail(data.email || '');
+        setPhone(data.phone || '');
+        setBirthDate(toInputDate(data.birth_date));
+      } catch (err) {
+        console.error('Error loading account:', err);
         setUser(authUser);
         setName(authUser.name || '');
         setEmail(authUser.email || '');
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error('Error loading user from DB, using cached session data:', error);
-      // Fallback to context user — do NOT redirect to login
-      setUser(authUser);
-      setName(authUser.name || '');
-      setEmail(authUser.email || '');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    })();
+  }, [authUser]);
 
-  const handleSaveProfile = async (e: FormEvent) => {
+  // /conta#planos rola até os planos
+  useEffect(() => {
+    if (!loading && location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loading, location.hash]);
+
+  const saveProfile = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-
-    setIsSaving(true);
-    setMessage(null);
-
+    if (!name.trim() || !email.trim()) {
+      setProfileError('Nome e e-mail são obrigatórios');
+      return;
+    }
+    setSavingProfile(true);
+    setProfileError(null);
     try {
-      const updatedUser = await updateUserProfile(user.id, {
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone.trim(),
-        birth_date: birthDate
-      });
-      
-      setUser(updatedUser);
-      updateAuthUser({ name: updatedUser.name, email: updatedUser.email, phone: updatedUser.phone, birth_date: updatedUser.birth_date });
-      setMessage({ type: 'success', text: 'Perfil atualizado com sucesso!' });
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao atualizar perfil' });
+      const updated = await updateUserProfile(user.id, { name: name.trim(), email: email.trim().toLowerCase(), phone: phone.trim(), birth_date: birthDate || undefined });
+      setUser(u => ({ ...u!, ...updated }));
+      updateUser({ name: updated.name, email: updated.email, phone: updated.phone, birth_date: updated.birth_date });
+      toast.success('Dados salvos');
+    } catch (err) {
+      setProfileError(err instanceof Error && /unique|duplicate/i.test(err.message) ? 'Este e-mail já está em uso.' : 'Não foi possível salvar. Tente de novo.');
     } finally {
-      setIsSaving(false);
+      setSavingProfile(false);
     }
   };
 
-  const handleChangePassword = async (e: FormEvent) => {
+  const changeAvatar = async (file?: File) => {
+    if (!file || !user) return;
+    const err = validateImageFile(file);
+    if (err) return toast.error(err);
+    setAvatarBusy(true);
+    try {
+      const dataUrl = await compressSingle(file, 256);
+      const updated = await updateUserProfile(user.id, { avatar_url: dataUrl });
+      setUser(u => ({ ...u!, avatar_url: updated.avatar_url }));
+      updateUser({ avatar_url: updated.avatar_url });
+      toast.success('Foto atualizada');
+    } catch {
+      toast.error('Não foi possível trocar a foto.');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const savePassword = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-
-    if (newPassword !== confirmPassword) {
-      setMessage({ type: 'error', text: 'As senhas não coincidem' });
-      return;
-    }
-
-    if (newPassword.length < 6) {
-      setMessage({ type: 'error', text: 'A nova senha deve ter pelo menos 6 caracteres' });
-      return;
-    }
-
-    setIsChangingPassword(true);
-    setMessage(null);
-
+    setPasswordError(null);
+    if (newPassword.length < 6) return setPasswordError('A nova senha precisa ter pelo menos 6 caracteres');
+    if (newPassword !== confirmPassword) return setPasswordError('As senhas não são iguais');
+    setSavingPassword(true);
     try {
-      const success = await changePassword(user.id, currentPassword, newPassword);
-      
-      if (success) {
-        setMessage({ type: 'success', text: 'Senha alterada com sucesso!' });
-        setCurrentPassword('');
-        setNewPassword('');
-        setConfirmPassword('');
-      } else {
-        setMessage({ type: 'error', text: 'Senha atual incorreta' });
+      const ok = await changePassword(user.id, currentPassword, newPassword);
+      if (!ok) {
+        setPasswordError('A senha atual está incorreta');
+        return;
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao alterar senha' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      toast.success('Senha alterada');
+    } catch {
+      setPasswordError('Não foi possível alterar a senha.');
     } finally {
-      setIsChangingPassword(false);
+      setSavingPassword(false);
     }
   };
 
-  const handleChangePlan = async (planType: 'basic' | 'premium') => {
-    if (!user || user.plan_type === planType) return;
-    setIsUpdatingPlan(true);
-    setMessage(null);
+  const changePlan = async (plan: PlanId) => {
+    if (!user) return;
+    setPlanBusy(true);
     try {
-      const updatedUser = await updateUserPlan(user.id, planType);
-      setUser(updatedUser);
-      updateAuthUser({ plan_type: planType });
-      setMessage({ type: 'success', text: `Plano alterado para ${planType === 'premium' ? 'Premium' : 'Básico'} com sucesso!` });
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Erro ao alterar plano' });
+      const updated = await updateUserPlan(user.id, plan);
+      setUser(u => ({ ...u!, ...updated }));
+      updateUser({ plan_type: plan, storage_limit: updated.storage_limit });
+      toast.success(plan === 'premium' ? 'Bem-vindo ao Premium' : 'Você voltou para o plano Básico');
+    } catch {
+      toast.error('Não foi possível mudar o plano.');
     } finally {
-      setIsUpdatingPlan(false);
+      setPlanBusy(false);
     }
   };
 
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return 'Não informado';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('pt-BR', { 
-      day: '2-digit', 
-      month: 'long', 
-      year: 'numeric' 
-    });
-  };
-
-  if (isLoading) {
+  if (loading || !user) {
     return (
-      <AppLayout maxWidth="max-w-4xl">
-        <div className="flex items-center justify-center h-64">
-          <div className="flex items-center gap-3">
-            <span className="material-symbols-outlined text-4xl text-primary animate-spin">progress_activity</span>
-            <span className="text-lg text-slate-600 dark:text-slate-400">Carregando...</span>
-          </div>
-        </div>
+      <AppLayout>
+        <PageLoader />
       </AppLayout>
     );
   }
 
+  const current = normalizePlan(user.plan_type);
+  const googleOnly = !!user.google_id && !user.password_hash;
+
   return (
-    <AppLayout maxWidth="max-w-4xl">
-      {/* Page Header */}
-      <div className="mb-6 md:mb-8">
-        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-white">Minha Conta</h1>
-        <p className="text-sm text-slate-500 mt-1">Gerencie suas informações pessoais</p>
-      </div>
+    <AppLayout>
+      <h1 className="font-display text-[30px] font-semibold text-ink sm:text-[32px]">Conta e planos</h1>
 
-      <div>
-        {/* Message */}
-        {message && (
-          <div className={`mb-6 p-4 rounded-lg ${
-            message.type === 'success' 
-              ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800' 
-              : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
-          }`}>
-            <p className={`text-sm flex items-center gap-2 ${
-              message.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-            }`}>
-              <span className="material-symbols-outlined text-lg">
-                {message.type === 'success' ? 'check_circle' : 'error'}
-              </span>
-              {message.text}
+      <div className="mt-6 grid gap-8 lg:grid-cols-[560px_1fr] lg:gap-10">
+        {/* Perfil + senha */}
+        <div className="space-y-5">
+          <Card tone="sand" className="p-6 sm:p-7">
+            <div className="flex items-center gap-5">
+              <Avatar name={user.name} src={user.avatar_url} size={84} tone="terra" />
+              <div className="min-w-0">
+                <p className="truncate font-display text-2xl font-semibold text-ink">{user.name}</p>
+                {user.created_at && <p className="text-sm text-muted">Membro desde {formatLongDate(user.created_at)}</p>}
+                <button type="button" onClick={() => avatarInput.current?.click()} disabled={avatarBusy} className="mt-1 text-sm font-bold text-terra-text hover:underline disabled:opacity-50">
+                  {avatarBusy ? 'Enviando…' : 'Trocar foto'}
+                </button>
+                <input ref={avatarInput} type="file" accept={ACCEPT_ATTR} hidden onChange={e => changeAvatar(e.target.files?.[0])} />
+              </div>
+            </div>
+
+            <form onSubmit={saveProfile} className="mt-6 space-y-4" noValidate>
+              <Field label="Nome completo" htmlFor="acc-name">
+                <Input id="acc-name" autoComplete="name" value={name} onChange={e => setName(e.target.value)} className="h-11" />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
+                <Field label="E-mail" htmlFor="acc-email">
+                  <Input id="acc-email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} className="h-11" />
+                </Field>
+                <Field label="Telefone" htmlFor="acc-phone">
+                  <Input id="acc-phone" type="tel" autoComplete="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="(00) 00000-0000" className="h-11" />
+                </Field>
+              </div>
+              <Field label="Data de nascimento" htmlFor="acc-birth" className="sm:max-w-[200px]">
+                <Input id="acc-birth" type="date" value={birthDate} onChange={e => setBirthDate(e.target.value)} className="h-11" />
+              </Field>
+              {profileError && (
+                <p role="alert" className="text-sm text-terra-text">
+                  {profileError}
+                </p>
+              )}
+              <Button type="submit" loading={savingProfile}>
+                Salvar alterações
+              </Button>
+            </form>
+          </Card>
+
+          <Card tone="outline" className="rounded-[24px] p-6">
+            <h2 className="font-sans text-base font-bold text-ink">Senha</h2>
+            {googleOnly ? (
+              <p className="mt-2 text-sm text-muted">Você entra com o Google, então não há senha para alterar aqui.</p>
+            ) : (
+              <form onSubmit={savePassword} className="mt-3" noValidate>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Senha atual" htmlFor="pw-cur">
+                    <PasswordInput id="pw-cur" autoComplete="current-password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="h-11 bg-cream pr-20" />
+                  </Field>
+                  <Field label="Nova senha" htmlFor="pw-new">
+                    <PasswordInput id="pw-new" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="h-11 bg-cream pr-20" />
+                  </Field>
+                  <Field label="Confirmar senha" htmlFor="pw-conf">
+                    <PasswordInput id="pw-conf" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="h-11 bg-cream pr-20" />
+                  </Field>
+                </div>
+                {passwordError && (
+                  <p role="alert" className="mt-3 text-sm text-terra-text">
+                    {passwordError}
+                  </p>
+                )}
+                <Button type="submit" variant="outline" size="sm" className="mt-4" loading={savingPassword} disabled={!currentPassword || !newPassword}>
+                  Alterar senha
+                </Button>
+              </form>
+            )}
+          </Card>
+        </div>
+
+        {/* Planos */}
+        <section id="planos" aria-labelledby="planos-title" className="scroll-mt-24">
+          <h2 id="planos-title" className="font-display text-[26px] font-semibold text-ink">
+            Seu plano
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            Você está no plano {PLANS[current].name}
+            {current === 'basic' ? ` · ${albumCount} de ${PLANS.basic.albumLimit} álbuns usados` : ''}.
+          </p>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            {(['basic', 'premium'] as PlanId[]).map(id => {
+              const p = PLANS[id];
+              const isCurrent = id === current;
+              const highlight = id === 'premium';
+              return (
+                <div key={id} className={`flex flex-col rounded-[26px] p-5 ${highlight ? 'bg-sand' : 'border border-divider bg-paper'}`}>
+                  <div>
+                    {isCurrent ? <Badge tone={highlight ? 'terra' : 'neutral'}>Plano atual</Badge> : highlight ? <Badge tone="terra">Completo</Badge> : <Badge tone="neutral">Gratuito</Badge>}
+                  </div>
+                  <p className="mt-3 font-display text-[22px] font-semibold text-ink">{p.name}</p>
+                  <p className="text-sm text-muted">{p.priceLabel}</p>
+                  <ul className="mt-5 space-y-3">
+                    {p.benefits.map(b => (
+                      <li key={b} className="flex items-start gap-2.5 text-sm text-ink">
+                        <Check className={`mt-0.5 size-4 shrink-0 ${highlight ? 'text-sage-text' : 'text-sage'}`} aria-hidden />
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-auto pt-8">
+                    {isCurrent ? (
+                      <div className="flex h-[42px] items-center justify-center rounded-full bg-divider text-sm text-ink">Plano atual</div>
+                    ) : highlight ? (
+                      <Button fullWidth onClick={() => changePlan('premium')} loading={planBusy}>
+                        Fazer upgrade
+                      </Button>
+                    ) : (
+                      <Button fullWidth variant="outline" onClick={() => changePlan('basic')} loading={planBusy}>
+                        Voltar para o Básico
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-4 text-sm text-muted">Você pode mudar de plano quando quiser.</p>
+          {current === 'premium' && albumCount > PLANS.basic.albumLimit && (
+            <p className="mt-2 text-sm text-terra-text">
+              No Básico você mantém seus {albumCount} álbuns, mas não consegue criar novos acima de {PLANS.basic.albumLimit}.
             </p>
-          </div>
-        )}
-
-        {/* Profile Section */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 mb-6">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">Informações Pessoais</h2>
-          </div>
-          
-          <form onSubmit={handleSaveProfile} className="p-6 space-y-5">
-            {/* Avatar */}
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
-                <span className="material-symbols-outlined text-4xl text-primary">person</span>
-              </div>
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">{user?.name}</p>
-                <p className="text-sm text-slate-500">Membro desde {formatDate(user?.created_at)}</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Nome Completo
-                </label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-
-              {/* Email */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  E-mail
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-
-              {/* Phone */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Telefone
-                </label>
-                <input
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="(00) 00000-0000"
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-
-              {/* Birth Date */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Data de Nascimento
-                </label>
-                <input
-                  type="date"
-                  value={birthDate}
-                  onChange={(e) => setBirthDate(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-            </div>
-
-            <div className="pt-4">
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="flex items-center gap-2 px-6 py-3 bg-primary text-background-dark font-bold rounded-lg hover:brightness-110 transition-all disabled:opacity-50"
-              >
-                {isSaving ? (
-                  <>
-                    <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                    Salvando...
-                  </>
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined">save</span>
-                    Salvar Alterações
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-        </div>
-
-        {/* Password Section */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 mb-6">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">Alterar Senha</h2>
-          </div>
-          
-          <form onSubmit={handleChangePassword} className="p-6 space-y-5">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Senha Atual
-                </label>
-                <input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Nova Senha
-                </label>
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Confirmar Senha
-                </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                />
-              </div>
-            </div>
-
-            <div className="pt-4">
-              <button
-                type="submit"
-                disabled={isChangingPassword || !currentPassword || !newPassword || !confirmPassword}
-                className="flex items-center gap-2 px-6 py-3 bg-slate-800 dark:bg-slate-700 text-white font-bold rounded-lg hover:bg-slate-700 dark:hover:bg-slate-600 transition-all disabled:opacity-50"
-              >
-                {isChangingPassword ? (
-                  <>
-                    <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                    Alterando...
-                  </>
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined">lock</span>
-                    Alterar Senha
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-        </div>
-
-        {/* Plan Section */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">Plano da Conta</h2>
-            <p className="text-sm text-slate-500 mt-0.5">Escolha o plano ideal para você</p>
-          </div>
-
-          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
-            {/* Basic Plan */}
-            <div className={`relative rounded-xl border-2 p-6 transition-all ${
-              (user?.plan_type === 'basic' || user?.plan_type === 'free' || !user?.plan_type)
-                ? 'border-slate-400 dark:border-slate-500 bg-slate-50 dark:bg-slate-800/50'
-                : 'border-slate-200 dark:border-slate-700'
-            }`}>
-              {(user?.plan_type === 'basic' || user?.plan_type === 'free' || !user?.plan_type) && (
-                <span className="absolute -top-3 left-4 px-3 py-1 bg-slate-600 text-white text-xs font-bold rounded-full">
-                  Plano Atual
-                </span>
-              )}
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">star</span>
-                </div>
-                <div>
-                  <p className="font-bold text-slate-900 dark:text-white text-lg">Básico</p>
-                  <p className="text-sm text-slate-500">Gratuito</p>
-                </div>
-              </div>
-              <ul className="space-y-2 mb-6 text-sm text-slate-600 dark:text-slate-400">
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Até 3 álbuns
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  5 GB de armazenamento
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Temas básicos
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-slate-300 text-base">cancel</span>
-                  <span className="text-slate-400">Álbuns ilimitados</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-slate-300 text-base">cancel</span>
-                  <span className="text-slate-400">Temas exclusivos</span>
-                </li>
-              </ul>
-              <button
-                onClick={() => handleChangePlan('basic')}
-                disabled={isUpdatingPlan || user?.plan_type === 'basic' || user?.plan_type === 'free' || !user?.plan_type}
-                className="w-full py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 text-sm font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {(user?.plan_type === 'basic' || user?.plan_type === 'free') ? 'Plano Atual' : 'Fazer Downgrade'}
-              </button>
-            </div>
-
-            {/* Premium Plan */}
-            <div className={`relative rounded-xl border-2 p-6 transition-all ${
-              user?.plan_type === 'premium'
-                ? 'border-primary bg-primary/5'
-                : 'border-slate-200 dark:border-slate-700 hover:border-primary/50'
-            }`}>
-              {user?.plan_type === 'premium' && (
-                <span className="absolute -top-3 left-4 px-3 py-1 bg-primary text-background-dark text-xs font-bold rounded-full">
-                  Plano Atual
-                </span>
-              )}
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-primary">diamond</span>
-                </div>
-                <div>
-                  <p className="font-bold text-slate-900 dark:text-white text-lg">Premium</p>
-                  <p className="text-sm text-primary font-medium">Completo</p>
-                </div>
-              </div>
-              <ul className="space-y-2 mb-6 text-sm text-slate-600 dark:text-slate-400">
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Álbuns ilimitados
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  20 GB de armazenamento
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Todos os temas exclusivos
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Suporte prioritário
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-green-500 text-base">check_circle</span>
-                  Fundos premium ilimitados
-                </li>
-              </ul>
-              <button
-                onClick={() => handleChangePlan('premium')}
-                disabled={isUpdatingPlan || user?.plan_type === 'premium'}
-                className="w-full py-2.5 rounded-lg bg-primary text-background-dark text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
-              >
-                {isUpdatingPlan
-                  ? 'Atualizando...'
-                  : user?.plan_type === 'premium'
-                    ? 'Plano Atual'
-                    : 'Fazer Upgrade'}
-              </button>
-            </div>
-          </div>
-        </div>
+          )}
+        </section>
       </div>
     </AppLayout>
   );

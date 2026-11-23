@@ -1,4 +1,6 @@
 import { sql } from '../../db/connection';
+import { PLANS, storageLimitFor } from '../../lib/plans';
+import { migrationsReady } from './shares';
 
 export interface User {
   id: string;
@@ -16,6 +18,7 @@ export interface User {
   show_email: boolean;
   email_notifications: boolean;
   marketing_emails: boolean;
+  default_album_visibility?: 'private' | 'link' | 'public';
   marketing_opt_in_at?: string;
   marketing_opt_out_at?: string;
   deleted_at?: string;
@@ -51,6 +54,7 @@ export interface UpdatePrivacyInput {
   show_email?: boolean;
   email_notifications?: boolean;
   marketing_emails?: boolean;
+  default_album_visibility?: 'private' | 'link' | 'public';
 }
 
 // Simple hash function for demo purposes
@@ -86,7 +90,7 @@ export async function registerUser(input: RegisterInput): Promise<User> {
       ${input.birth_date},
       'basic',
       0,
-      1073741824
+      ${PLANS.basic.storageBytes}
     )
     RETURNING *
   `;
@@ -175,7 +179,7 @@ export async function loginWithGoogle(googleProfile: {
       ${avatarUrl ?? null},
       'basic',
       0,
-      1073741824
+      ${PLANS.basic.storageBytes}
     )
     RETURNING *
   `;
@@ -242,9 +246,11 @@ export async function updatePrivacySettings(
     }
   }
   
+  await migrationsReady();
   const result = await sql`
     UPDATE users 
     SET 
+      default_album_visibility = COALESCE(${input.default_album_visibility ?? null}, default_album_visibility),
       is_public_profile = COALESCE(${input.is_public_profile ?? null}, is_public_profile),
       albums_public = COALESCE(${input.albums_public ?? null}, albums_public),
       show_email = COALESCE(${input.show_email ?? null}, show_email),
@@ -363,7 +369,7 @@ export async function cancelAccountDeletion(userId: string): Promise<void> {
 export async function updateUserPlan(userId: string, planType: 'basic' | 'premium'): Promise<User> {
   if (!sql) throw new Error('Database not available');
 
-  const storageLimit = planType === 'premium' ? 5368709120 : 1073741824; // 5GB for premium, 1GB for basic
+  const storageLimit = PLANS[planType].storageBytes;
 
   const result = await sql`
     UPDATE users 
@@ -420,7 +426,7 @@ export async function getUserStats(userId: string): Promise<{
   `;
   
   const userStats = await sql`
-    SELECT storage_used, storage_limit FROM users WHERE id = ${userId}
+    SELECT storage_used, storage_limit, plan_type FROM users WHERE id = ${userId}
   `;
   
   return {
@@ -429,6 +435,6 @@ export async function getUserStats(userId: string): Promise<{
     totalPhotos: Number(albumStats[0]?.total_photos || 0),
     totalVideos: Number(albumStats[0]?.total_videos || 0),
     storageUsed: Number(userStats[0]?.storage_used || 0),
-    storageLimit: Number(userStats[0]?.storage_limit || 1073741824)
+    storageLimit: storageLimitFor(userStats[0]?.plan_type, userStats[0]?.storage_limit)
   };
 }

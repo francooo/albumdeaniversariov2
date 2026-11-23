@@ -1,25 +1,17 @@
-import { Link } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { ButtonLink, Logo } from '../components/ui';
 
 export default function NotFound() {
+  const { user } = useAuth();
   return (
-    <div className="min-h-screen bg-gradient-to-br from-pink-50 via-white to-blue-50 flex items-center justify-center p-4">
-      <div className="text-center max-w-md">
-        <span className="material-symbols-outlined text-7xl text-slate-200 block mb-4">
-          sentiment_dissatisfied
-        </span>
-        <h1 className="text-4xl font-bold text-slate-800 mb-2">404</h1>
-        <h2 className="text-xl font-semibold text-slate-600 mb-4">Página não encontrada</h2>
-        <p className="text-slate-500 mb-8">
-          O endereço que você digitou não existe ou foi removido.
-        </p>
-        <Link
-          to="/login"
-          className="inline-flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-xl font-semibold hover:brightness-110 transition-all"
-        >
-          <span className="material-symbols-outlined text-lg">home</span>
-          Ir para o início
-        </Link>
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-cream px-6 text-center">
+      <Logo size={44} textClass="text-[22px]" />
+      <div>
+        <p className="font-display text-7xl font-semibold text-terra">404</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold text-ink">Esta página não existe</h1>
+        <p className="mt-2 max-w-sm text-muted">O endereço pode ter mudado ou a página foi removida.</p>
       </div>
+      <ButtonLink to={user ? '/inicio' : '/login'}>{user ? 'Voltar para o início' : 'Ir para o login'}</ButtonLink>
     </div>
   );
 }

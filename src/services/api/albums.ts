@@ -1,4 +1,6 @@
 import { sql } from '../../db/connection';
+import { migrationsReady, generateShareToken } from './shares';
+import { getPlan, normalizePlan } from '../../lib/plans';
 
 export interface Album {
   id: string;
@@ -22,6 +24,21 @@ export interface Album {
   published_at?: string;
   last_edited_by?: string;
   last_edited_at?: string;
+  event_date?: string | null;
+  occasion?: string | null;
+  layout?: string | null;
+  style?: string | null;
+}
+
+/** Álbum com dados agregados para listagens (contagem de seções e miniatura de capa). */
+export interface AlbumSummary extends Album {
+  section_count: number;
+  cover_thumb: string | null;
+}
+
+export interface CreateAlbumSection {
+  title: string;
+  icon?: string;
 }
 
 export interface CreateAlbumInput {
@@ -33,6 +50,16 @@ export interface CreateAlbumInput {
   accent_color?: string;
   status?: string;
   is_public?: boolean;
+  occasion?: string | null;
+  event_date?: string | null;
+  sections?: CreateAlbumSection[];
+}
+
+export class PlanLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PlanLimitError';
+  }
 }
 
 export interface AlbumStats {
@@ -106,28 +133,63 @@ export async function getAlbumById(albumId: string): Promise<Album | null> {
   return result[0] as Album || null;
 }
 
-// Create a new album
+// Create a new album (aplica limite do plano, ocasião com seções prontas e visibilidade padrão do usuário)
 export async function createAlbum(input: CreateAlbumInput): Promise<Album> {
   if (!sql) throw new Error('Database not available');
-  
+  await migrationsReady();
+
+  const userRows = await sql`
+    SELECT plan_type, default_album_visibility,
+      (SELECT COUNT(*) FROM albums WHERE user_id = ${input.user_id}) AS album_count
+    FROM users WHERE id = ${input.user_id}
+  `;
+  const userRow = userRows[0] as { plan_type: string; default_album_visibility: string | null; album_count: string } | undefined;
+  if (!userRow) throw new Error('Usuário não encontrado');
+
+  const plan = getPlan(userRow.plan_type);
+  if (Number(userRow.album_count) >= plan.albumLimit) {
+    throw new PlanLimitError(`Você chegou ao máximo de ${plan.albumLimit} álbuns do plano ${plan.name}.`);
+  }
+
+  const visibility = userRow.default_album_visibility || 'link';
+  const isPublic = input.is_public ?? visibility === 'public';
+
   const result = await sql`
     INSERT INTO albums (
-      user_id, title, subtitle, description, 
-      theme, accent_color, status, is_public
+      user_id, title, subtitle, description,
+      theme, accent_color, status, is_public, occasion, event_date, layout, style
     ) VALUES (
-      ${input.user_id}, 
-      ${input.title}, 
-      ${input.subtitle || null}, 
+      ${input.user_id},
+      ${input.title},
+      ${input.subtitle || null},
       ${input.description || null},
-      ${input.theme || 'gold'},
-      ${input.accent_color || '#D4AF37'},
+      ${input.theme || 'creme'},
+      ${input.accent_color || '#C67139'},
       ${input.status || 'draft'},
-      ${input.is_public || false}
+      ${isPublic},
+      ${input.occasion || null},
+      ${input.event_date || null},
+      'two',
+      'jardim'
     )
     RETURNING *
   `;
-  
-  return result[0] as Album;
+  const album = result[0] as Album;
+
+  const sections = input.sections ?? [];
+  for (let i = 0; i < sections.length; i++) {
+    await sql`
+      INSERT INTO sections (album_id, title, icon, icon_color, section_type, status, sort_order)
+      VALUES (${album.id}, ${sections[i].title}, ${sections[i].icon || 'calendar_today'}, '#C67139', 'category', 'active', ${i})
+    `;
+  }
+
+  // "Quem tem o link" / "Público": já deixa o link de compartilhamento ativo
+  if (visibility !== 'private') {
+    await generateShareToken(album.id).catch(err => console.warn('Share token not created:', err));
+  }
+
+  return album;
 }
 
 // Get or create a default album for the current user
@@ -137,6 +199,128 @@ export async function getAlbumsByUser(userId: string): Promise<Album[]> {
   
   return await sql`SELECT * FROM albums WHERE user_id = ${userId} ORDER BY created_at DESC` as Album[];
 }
+
+/** Álbuns do usuário com contagem de seções e miniatura de capa (para Início e Meus álbuns). */
+export async function getAlbumSummaries(userId: string): Promise<AlbumSummary[]> {
+  if (!sql) throw new Error('Database not available');
+  await migrationsReady();
+  const rows = await sql`
+    SELECT a.*,
+      (SELECT COUNT(*) FROM sections s WHERE s.album_id = a.id) AS section_count,
+      COALESCE(
+        a.cover_thumbnail_url,
+        a.cover_image_url,
+        (SELECT COALESCE(m.thumbnail_url, m.original_url) FROM media m
+          WHERE m.album_id = a.id AND m.file_type LIKE 'image/%'
+          ORDER BY m.is_cover DESC NULLS LAST, m.sort_order ASC, m.created_at ASC LIMIT 1),
+        (SELECT s.image_url FROM sections s WHERE s.album_id = a.id AND s.image_url IS NOT NULL
+          ORDER BY s.sort_order ASC LIMIT 1)
+      ) AS cover_thumb
+    FROM albums a
+    WHERE a.user_id = ${userId}
+    ORDER BY COALESCE(a.last_edited_at, a.updated_at, a.created_at) DESC
+  `;
+  return rows.map(r => ({ ...r, section_count: Number(r.section_count) || 0 })) as AlbumSummary[];
+}
+
+/** Quantos álbuns o usuário tem e quantos o plano permite. */
+export async function getAlbumQuota(userId: string): Promise<{ used: number; limit: number; plan: ReturnType<typeof normalizePlan> }> {
+  if (!sql) throw new Error('Database not available');
+  const rows = await sql`
+    SELECT plan_type, (SELECT COUNT(*) FROM albums WHERE user_id = ${userId}) AS album_count
+    FROM users WHERE id = ${userId}
+  `;
+  const row = rows[0] as { plan_type: string; album_count: string } | undefined;
+  const plan = getPlan(row?.plan_type);
+  return { used: Number(row?.album_count) || 0, limit: plan.albumLimit, plan: plan.id };
+}
+
+/** Marca o álbum como editado agora (ordena "Continue de onde parou"). */
+export async function touchAlbum(albumId: string, userId?: string): Promise<void> {
+  if (!sql) return;
+  await sql`
+    UPDATE albums SET last_edited_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+      last_edited_by = COALESCE(${userId ?? null}, last_edited_by)
+    WHERE id = ${albumId}
+  `;
+}
+
+export async function updateAlbumDetails(
+  albumId: string,
+  data: { title: string; subtitle: string | null; event_date: string | null },
+): Promise<Album> {
+  if (!sql) throw new Error('Database not available');
+  await migrationsReady();
+  const result = await sql`
+    UPDATE albums SET
+      title = ${data.title},
+      subtitle = ${data.subtitle || null},
+      event_date = ${data.event_date || null},
+      updated_at = CURRENT_TIMESTAMP,
+      last_edited_at = CURRENT_TIMESTAMP
+    WHERE id = ${albumId}
+    RETURNING *
+  `;
+  return result[0] as Album;
+}
+
+export async function publishAlbum(albumId: string): Promise<Album> {
+  if (!sql) throw new Error('Database not available');
+  const result = await sql`
+    UPDATE albums SET status = 'active', published_at = COALESCE(published_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP, last_edited_at = CURRENT_TIMESTAMP
+    WHERE id = ${albumId}
+    RETURNING *
+  `;
+  return result[0] as Album;
+}
+
+export async function unpublishAlbum(albumId: string): Promise<Album> {
+  if (!sql) throw new Error('Database not available');
+  const result = await sql`
+    UPDATE albums SET status = 'draft', updated_at = CURRENT_TIMESTAMP, last_edited_at = CURRENT_TIMESTAMP
+    WHERE id = ${albumId}
+    RETURNING *
+  `;
+  return result[0] as Album;
+}
+
+/** Tema, layout, estilo e capa avulsa (personalizacao.xml). */
+export async function updateAlbumDesign(
+  albumId: string,
+  data: { theme: string; layout: string; style: string; cover_image_url?: string | null; cover_thumbnail_url?: string | null },
+): Promise<Album> {
+  if (!sql) throw new Error('Database not available');
+  await migrationsReady();
+  const result = await sql`
+    UPDATE albums SET theme = ${data.theme}, layout = ${data.layout}, style = ${data.style},
+      cover_image_url = COALESCE(${data.cover_image_url ?? null}, cover_image_url),
+      cover_thumbnail_url = COALESCE(${data.cover_thumbnail_url ?? null}, cover_thumbnail_url),
+      updated_at = CURRENT_TIMESTAMP, last_edited_at = CURRENT_TIMESTAMP
+    WHERE id = ${albumId} RETURNING *
+  `;
+  if (data.cover_image_url) {
+    // Capa avulsa substitui a capa escolhida entre as fotos
+    await sql`UPDATE media SET is_cover = false WHERE album_id = ${albumId} AND is_cover = true`;
+  }
+  return result[0] as Album;
+}
+
+/** Exclui o álbum (seções e mídia caem em cascata) e devolve o espaço ao usuário. */
+export async function deleteAlbum(albumId: string): Promise<void> {
+  if (!sql) throw new Error('Database not available');
+  const rows = await sql`
+    SELECT a.user_id, COALESCE(SUM(m.file_size), 0) AS bytes
+    FROM albums a LEFT JOIN media m ON m.album_id = a.id
+    WHERE a.id = ${albumId}
+    GROUP BY a.user_id
+  `;
+  const row = rows[0] as { user_id: string; bytes: string } | undefined;
+  if (!row) return;
+  await sql`DELETE FROM albums WHERE id = ${albumId}`;
+  await sql`UPDATE users SET storage_used = GREATEST(0, storage_used - ${Number(row.bytes)}) WHERE id = ${row.user_id}`;
+}
+
 
 export async function getOrCreateDefaultAlbum(userId?: string): Promise<Album | null> {
   if (!sql) throw new Error('Database not available');

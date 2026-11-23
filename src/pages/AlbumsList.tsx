@@ -1,359 +1,307 @@
-import React, { useState, useEffect, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { getAlbumsByUser, createAlbum, getUserStats, type Album } from '../services/api';
-import { Toast, AppLayout } from '../components';
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { LayoutGrid, List, Plus, Search } from 'lucide-react';
+import AppLayout from '../components/AppLayout';
+import CreateAlbumModal from '../components/CreateAlbumModal';
+import AlbumCover from '../components/AlbumCover';
+import { AlbumCardSkeleton } from '../components/LoadingSkeleton';
+import { Badge, ButtonLink, Button, Chip, Input, ProgressBar, Segmented } from '../components/ui';
+import { getAlbumSummaries, getUserStats, type AlbumSummary } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { getPlan } from '../lib/plans';
+import { formatBytes, plural } from '../lib/format';
+
+type Filter = 'all' | 'published' | 'draft';
+type View = 'grid' | 'list';
+
+const VIEW_KEY = 'albums_view';
+
+function readView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
+
+function normalize(s: string) {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
 
 export default function AlbumsList() {
-  const navigate = useNavigate();
-  const { user: authUser } = useAuth();
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isCreating, setIsCreating] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newAlbumTitle, setNewAlbumTitle] = useState('');
-  const [newAlbumSubtitle, setNewAlbumSubtitle] = useState('');
-  const [storageStats, setStorageStats] = useState({
-    used: 0,
-    limit: 1073741824, // 1GB default
-    percentage: 0
-  });
+  const { user } = useAuth();
+  const [albums, setAlbums] = useState<AlbumSummary[]>([]);
+  const [storage, setStorage] = useState({ used: 0, limit: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter>('all');
+  const [view, setView] = useState<View>(readView);
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
-    if (authUser) loadAlbums();
-  }, [authUser]);
+    if (!user) return;
+    let alive = true;
+    Promise.all([getAlbumSummaries(user.id), getUserStats(user.id)])
+      .then(([list, s]) => {
+        if (!alive) return;
+        setAlbums(list);
+        setStorage({ used: s.storageUsed, limit: s.storageLimit });
+      })
+      .catch(err => {
+        console.error('Error loading albums:', err);
+        if (alive) setLoadError(true);
+      })
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [user]);
 
-  const loadAlbums = async () => {
-    if (!authUser) return;
+  const changeView = (v: View) => {
+    setView(v);
     try {
-      setIsLoading(true);
-      const albumsData = await getAlbumsByUser(authUser.id);
-      setAlbums(albumsData);
-      
-      // Load user's storage stats
-      const userStats = await getUserStats(authUser.id);
-      setStorageStats({
-        used: userStats.storageUsed,
-        limit: userStats.storageLimit,
-        percentage: Math.min(100, (userStats.storageUsed / userStats.storageLimit) * 100)
-      });
-    } catch (error) {
-      console.error('Error loading albums:', error);
-    } finally {
-      setIsLoading(false);
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* preferência opcional */
     }
   };
 
-  const openCreateModal = () => {
-    setNewAlbumTitle(authUser ? `Álbum de ${authUser.name}` : '');
-    setNewAlbumSubtitle('');
-    setShowCreateModal(true);
+  const plan = getPlan(user?.plan_type);
+  const finite = Number.isFinite(plan.albumLimit);
+  const atLimit = finite && albums.length >= plan.albumLimit;
+  const remaining = finite ? Math.max(0, plan.albumLimit - albums.length) : Infinity;
+
+  const visible = useMemo(() => {
+    const q = normalize(query.trim());
+    return albums.filter(a => {
+      if (filter === 'published' && a.status !== 'active') return false;
+      if (filter === 'draft' && a.status === 'active') return false;
+      if (q && !normalize(`${a.title} ${a.subtitle ?? ''}`).includes(q)) return false;
+      return true;
+    });
+  }, [albums, filter, query]);
+
+  const counts = {
+    all: albums.length,
+    published: albums.filter(a => a.status === 'active').length,
+    draft: albums.filter(a => a.status !== 'active').length,
   };
 
-  const showToast = (message: string, type: 'success' | 'error') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  };
-
-  const handleCreateAlbum = async (e: FormEvent) => {
-    e.preventDefault();
-    
-    if (!newAlbumTitle.trim()) {
-      showToast('Digite um título para o álbum', 'error');
+  const openCreate = () => {
+    if (atLimit) {
+      document.getElementById('limite')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('limite')?.focus();
       return;
     }
-
-    if (!authUser) return;
-
-    setIsCreating(true);
-
-    try {
-      const newAlbum = await createAlbum({
-        user_id: authUser.id,
-        title: newAlbumTitle,
-        subtitle: newAlbumSubtitle || undefined,
-        theme: 'gold',
-        status: 'draft'
-      });
-      
-      showToast('Álbum criado com sucesso!', 'success');
-      setShowCreateModal(false);
-      setNewAlbumTitle('');
-      setNewAlbumSubtitle('');
-      
-      // Navigate to the new album's dashboard
-      navigate(`/dashboard/${newAlbum.id}`);
-    } catch (error) {
-      console.error('Error creating album:', error);
-      showToast('Erro ao criar álbum', 'error');
-    } finally {
-      setIsCreating(false);
-    }
-  };
-
-  // Format bytes to human readable
-  const formatStorage = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
-
-  const getThemeColor = (theme: string) => {
-    const colors: Record<string, string> = {
-      gold: 'from-yellow-400 to-amber-600',
-      silver: 'from-gray-300 to-gray-500',
-      'rose-gold': 'from-rose-300 to-rose-500',
-      minimal: 'from-slate-200 to-slate-400'
-    };
-    return colors[theme] || colors.gold;
-  };
-
-  const getStatusBadge = (status: string) => {
-    const styles: Record<string, string> = {
-      draft: 'bg-yellow-100 text-yellow-700',
-      active: 'bg-green-100 text-green-700',
-      archived: 'bg-gray-100 text-gray-700'
-    };
-    const labels: Record<string, string> = {
-      draft: 'Rascunho',
-      active: 'Ativo',
-      archived: 'Arquivado'
-    };
-    return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium ${styles[status] || styles.draft}`}>
-        {labels[status] || status}
-      </span>
-    );
+    setCreateOpen(true);
   };
 
   return (
-    <AppLayout maxWidth="max-w-7xl">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 md:mb-8">
+    <AppLayout>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-white">Meus Álbuns</h1>
-          <p className="text-sm text-slate-500 mt-1">{albums.length} álbum{albums.length !== 1 ? 's' : ''}</p>
+          <h1 className="font-display text-[30px] font-semibold text-ink sm:text-[34px]">Meus álbuns</h1>
+          <p className="mt-1 text-sm text-muted">
+            {finite ? `${albums.length} de ${plan.albumLimit} álbuns no plano ${plan.name}` : `${plural(albums.length, 'álbum', 'álbuns')} no plano ${plan.name}`}
+          </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="flex items-center gap-2 bg-primary text-background-dark px-4 py-2.5 rounded-lg text-sm font-bold hover:brightness-110 transition-all self-start sm:self-auto"
-        >
-          <span className="material-symbols-outlined text-sm">add</span>
-          Novo Álbum
-        </button>
+        <Button onClick={openCreate} icon={<Plus className="size-4" />} className="self-start sm:self-auto">
+          Novo álbum
+        </Button>
       </div>
 
-      <div>
-        {/* Storage Widget */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 mb-8 w-full sm:max-w-md sm:ml-auto">
-          <h3 className="font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
-            <span className="material-symbols-outlined text-primary">cloud</span>
-            Armazenamento
-          </h3>
-          {isLoading ? (
-            <div className="animate-pulse">
-              <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-3/4 mb-2"></div>
-              <div className="h-2 bg-slate-200 dark:bg-slate-800 rounded-full mb-2"></div>
-              <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded w-1/4"></div>
-            </div>
-          ) : (
-            <>
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm text-slate-500">Usado</span>
-                <span className="text-sm font-medium">
-                  {formatStorage(storageStats.used)} / {formatStorage(storageStats.limit)}
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 mb-2">
-                <div 
-                  className="bg-primary h-2 rounded-full transition-all"
-                  style={{ width: `${storageStats.percentage}%` }}
-                ></div>
-              </div>
-              <p className="text-xs text-slate-400">{storageStats.percentage.toFixed(1)}% utilizado</p>
-            </>
-          )}
+      {/* Busca, filtros e visualização */}
+      <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="w-full lg:w-[300px]">
+          <label htmlFor="album-search" className="sr-only">
+            Buscar álbum
+          </label>
+          <Input
+            id="album-search"
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Buscar álbum"
+            leading={<Search className="size-[18px]" />}
+            className="h-11 rounded-full"
+          />
         </div>
+        <div className="-mx-4 flex gap-2.5 overflow-x-auto px-4 scrollbar-none sm:mx-0 sm:px-0" role="group" aria-label="Filtrar álbuns">
+          <Chip active={filter === 'all'} onClick={() => setFilter('all')}>
+            Todos
+          </Chip>
+          <Chip active={filter === 'published'} onClick={() => setFilter('published')}>
+            Publicados{counts.published ? ` · ${counts.published}` : ''}
+          </Chip>
+          <Chip active={filter === 'draft'} onClick={() => setFilter('draft')}>
+            Rascunhos{counts.draft ? ` · ${counts.draft}` : ''}
+          </Chip>
+        </div>
+        <div className="lg:ml-auto">
+          <Segmented
+            label="Visualização"
+            value={view}
+            onChange={changeView}
+            options={[
+              { value: 'grid', label: <><LayoutGrid className="size-4" aria-hidden /> Grade</> },
+              { value: 'list', label: <><List className="size-4" aria-hidden /> Lista</> },
+            ]}
+          />
+        </div>
+      </div>
 
-        {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 h-64 animate-pulse">
-                <div className="h-32 bg-slate-200 dark:bg-slate-800 rounded-t-xl" />
-                <div className="p-4 space-y-3">
-                  <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-3/4" />
-                  <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded w-1/2" />
-                </div>
-              </div>
+      {loadError && (
+        <p role="alert" className="mt-6 rounded-[20px] bg-terra-soft p-4 text-sm text-terra-text">
+          Não conseguimos carregar seus álbuns. Atualize a página para tentar de novo.
+        </p>
+      )}
+
+      {/* Lista */}
+      <div className="mt-6">
+        {loading ? (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            {[0, 1, 2].map(i => (
+              <AlbumCardSkeleton key={i} />
             ))}
           </div>
-        ) : albums.length === 0 ? (
-          <div className="text-center py-16">
-            <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-primary/10 flex items-center justify-center">
-              <span className="material-symbols-outlined text-4xl text-primary">photo_album</span>
-            </div>
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-              Nenhum álbum ainda
-            </h2>
-            <p className="text-slate-500 dark:text-slate-400 mb-6 max-w-md mx-auto">
-              Crie seu primeiro álbum de aniversário para começar a guardar suas memórias especiais.
-            </p>
-            <button
-              onClick={openCreateModal}
-              className="flex items-center gap-2 bg-primary text-background-dark px-6 py-3 rounded-lg font-bold hover:brightness-110 transition-all mx-auto"
+        ) : visible.length === 0 && albums.length > 0 ? (
+          <div className="rounded-card border-2 border-dashed border-divider bg-paper p-10 text-center">
+            <p className="font-display text-xl font-semibold text-ink">Nenhum álbum encontrado</p>
+            <p className="mt-1 text-sm text-muted">Tente outra busca ou outro filtro.</p>
+            <Button
+              variant="outline"
+              className="mt-4"
+              onClick={() => {
+                setQuery('');
+                setFilter('all');
+              }}
             >
-              <span className="material-symbols-outlined">add</span>
-              Criar Primeiro Álbum
-            </button>
+              Limpar filtros
+            </Button>
+          </div>
+        ) : view === 'grid' ? (
+          <div className="grid grid-cols-1 gap-x-6 gap-y-7 sm:grid-cols-2 lg:grid-cols-4">
+            {visible.map(a => (
+              <AlbumGridCard key={a.id} album={a} />
+            ))}
+            {filter !== 'published' && !query && <CreateCard onClick={openCreate} disabled={atLimit} />}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {albums.map((album) => (
-              <Link
-                key={album.id}
-                to={`/dashboard/${album.id}`}
-                className="group bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden hover:shadow-lg transition-all"
-              >
-                {/* Album Cover */}
-                <div className={`h-40 bg-gradient-to-br ${getThemeColor(album.theme)} relative`}>
-                  {album.cover_image_url ? (
-                    <img
-                      src={album.cover_image_url}
-                      alt={album.title}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="material-symbols-outlined text-6xl text-white/50">photo_album</span>
-                    </div>
-                  )}
-                  <div className="absolute top-3 right-3">
-                    {getStatusBadge(album.status)}
-                  </div>
-                </div>
-
-                {/* Album Info */}
-                <div className="p-4">
-                  <h3 className="font-bold text-lg text-slate-900 dark:text-white mb-1 group-hover:text-primary transition-colors">
-                    {album.title}
-                  </h3>
-                  {album.subtitle && (
-                    <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
-                      {album.subtitle}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-4 text-xs text-slate-400">
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-sm">image</span>
-                      {album.total_photos || 0} fotos
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-sm">videocam</span>
-                      {album.total_videos || 0} vídeos
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-sm">visibility</span>
-                      {album.view_count || 0}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-3">
-                    Criado em {new Date(album.created_at).toLocaleDateString('pt-BR')}
-                  </p>
-                </div>
-              </Link>
+          <ul className="divide-y divide-divider overflow-hidden rounded-card bg-paper">
+            {visible.map(a => (
+              <AlbumListRow key={a.id} album={a} />
             ))}
-
-            {/* Create New Card */}
-            <button
-              onClick={openCreateModal}
-              className="group bg-slate-50 dark:bg-slate-800/50 rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-700 h-64 flex flex-col items-center justify-center hover:border-primary hover:bg-primary/5 transition-all"
-            >
-              <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
-                <span className="material-symbols-outlined text-3xl text-primary">add</span>
-              </div>
-              <span className="font-bold text-slate-600 dark:text-slate-400 group-hover:text-primary transition-colors">
-                Criar Novo Álbum
-              </span>
-            </button>
-          </div>
-        )}
-      {/* Create Album Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-                Criar Novo Álbum
-              </h2>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-              >
-                <span className="material-symbols-outlined text-slate-400">close</span>
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateAlbum} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Título do Álbum *
-                </label>
-                <input
-                  type="text"
-                  value={newAlbumTitle}
-                  onChange={(e) => setNewAlbumTitle(e.target.value)}
-                  placeholder="Ex: Aniversário de 30 Anos"
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent"
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Subtítulo (opcional)
-                </label>
-                <input
-                  type="text"
-                  value={newAlbumSubtitle}
-                  onChange={(e) => setNewAlbumSubtitle(e.target.value)}
-                  placeholder="Ex: Uma celebração especial"
-                  className="w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent"
-                />
-              </div>
-
-              <div className="flex gap-3 pt-4">
+            {filter !== 'published' && !query && (
+              <li>
                 <button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="flex-1 px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                  onClick={openCreate}
+                  disabled={atLimit}
+                  className="flex w-full items-center gap-4 p-4 text-left text-ink hover:bg-sand/50 disabled:opacity-50"
                 >
-                  Cancelar
+                  <span className="inline-flex size-16 items-center justify-center rounded-[16px] border-2 border-dashed border-divider">
+                    <Plus className="size-6 text-sage" />
+                  </span>
+                  <span>
+                    <span className="block font-bold">Criar novo álbum</span>
+                    <span className="text-sm text-muted">Comece por uma ocasião</span>
+                  </span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={isCreating}
-                  className="flex-1 px-4 py-3 rounded-lg bg-primary text-background-dark font-bold hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isCreating ? 'Criando...' : 'Criar Álbum'}
-                </button>
-              </div>
-            </form>
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+
+      {/* Espaço e limite do plano */}
+      {!loading && (
+        <div className="mt-10 grid items-center gap-6 lg:grid-cols-[1fr_500px]">
+          <div className="max-w-[360px]">
+            <p className="text-sm text-muted">
+              {formatBytes(storage.used)} de {formatBytes(storage.limit || plan.storageBytes)} usados
+            </p>
+            <ProgressBar value={storage.used} max={storage.limit || plan.storageBytes} className="mt-2 h-2.5" label="Espaço usado" />
+            {finite && !atLimit && (
+              <p className="mt-3 text-sm text-muted">
+                {remaining === 1 ? 'Falta 1 álbum' : `Faltam ${remaining} álbuns`} para o limite do plano {plan.name}
+              </p>
+            )}
           </div>
+
+          {atLimit && (
+            <div id="limite" tabIndex={-1} className="flex flex-col gap-4 rounded-[22px] bg-terra-soft p-5 outline-none sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-bold text-terra-text">Limite atingido · Faça upgrade</p>
+                <p className="mt-1 text-sm text-terra-text">
+                  Você chegou ao máximo de {plan.albumLimit} álbuns do plano {plan.name}.
+                </p>
+              </div>
+              <ButtonLink to="/conta#planos" className="shrink-0">
+                Fazer upgrade
+              </ButtonLink>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Toast Notification */}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
-      </div>
+      <CreateAlbumModal isOpen={createOpen} onClose={() => setCreateOpen(false)} />
     </AppLayout>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return status === 'active' ? <Badge tone="published">Publicado</Badge> : <Badge tone="draft">Rascunho</Badge>;
+}
+
+function AlbumGridCard({ album }: { album: AlbumSummary }) {
+  return (
+    <Link to={`/albums/${album.id}`} className="group block rounded-[24px]">
+      <div className="relative overflow-hidden rounded-[24px]">
+        <AlbumCover src={album.cover_thumb} theme={album.theme} className="aspect-[270/228] w-full transition-transform duration-300 group-hover:scale-[1.02]" />
+        <span className="absolute left-3.5 top-3.5">
+          <StatusBadge status={album.status} />
+        </span>
+      </div>
+      <p className="mt-3 truncate font-display text-xl font-semibold text-ink">{album.title}</p>
+      <p className="text-sm text-muted">
+        {plural(album.section_count, 'seção', 'seções')} · {plural(Number(album.total_photos) || 0, 'foto')}
+      </p>
+    </Link>
+  );
+}
+
+function AlbumListRow({ album }: { album: AlbumSummary }) {
+  return (
+    <li>
+      <Link to={`/albums/${album.id}`} className="flex items-center gap-4 p-4 hover:bg-sand/50">
+        <AlbumCover src={album.cover_thumb} theme={album.theme} className="size-16 shrink-0 rounded-[16px]" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-bold text-ink">{album.title}</p>
+          <p className="truncate text-sm text-muted">
+            {plural(album.section_count, 'seção', 'seções')} · {plural(Number(album.total_photos) || 0, 'foto')}
+            {album.subtitle ? ` · ${album.subtitle}` : ''}
+          </p>
+        </div>
+        <StatusBadge status={album.status} />
+      </Link>
+    </li>
+  );
+}
+
+function CreateCard({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-disabled={disabled}
+      className={`flex min-h-[260px] flex-col items-center justify-center rounded-[24px] border-2 border-dashed border-divider p-6 text-center transition-colors ${
+        disabled ? 'opacity-60' : 'hover:bg-paper'
+      }`}
+    >
+      <Plus className="size-11 text-sage" aria-hidden />
+      <span className="mt-4 font-bold text-ink">Criar novo álbum</span>
+      <span className="mt-1 text-sm text-muted">{disabled ? 'Limite do plano atingido' : 'Comece por uma ocasião'}</span>
+    </button>
   );
 }

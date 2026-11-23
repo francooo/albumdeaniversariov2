@@ -1,24 +1,84 @@
 @import "tailwindcss";
 
+/* Design system "Memórias" — tokens do handoff (documentation/design-tokens.json) */
 @theme {
-  --color-primary: #f4c025;
-  --color-background-light: #f8f8f5;
-  --color-background-dark: #221e10;
-  --font-display: "Noto Serif", serif;
-  --font-sans: "Noto Sans", sans-serif;
+  --color-cream: #F5EAD8;
+  --color-sand: #EBDDC5;
+  --color-ink: #201E1D;
+  --color-terra: #C67139;
+  --color-terra-text: #8F5129;
+  --color-sage: #7A8A5E;
+  --color-sage-text: #586444;
+  --color-sage-soft: #DCE3CC;
+  --color-terra-soft: #F3DCC9;
+  --color-divider: #E0D3BE;
+  --color-paper: #FFF9F0;
+  --color-muted: #6B6156;
+  --color-book: #F0E3CE;
+
+  --font-display: "Baloo 2", "Nunito", system-ui, sans-serif;
+  --font-sans: "Nunito", system-ui, sans-serif;
+
+  --radius-card: 28px;
+  --radius-field: 16px;
+
+  --animate-fade-in: fade-in 180ms ease-out;
+  --animate-sheet-in: sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-pop-in: pop-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes sheet-in {
+    from { transform: translateY(24px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { transform: scale(0.97); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--color-cream);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    line-height: 1.15;
+  }
+  ::selection {
+    background: var(--color-terra-soft);
+    color: var(--color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-terra);
+    outline-offset: 2px;
+  }
+  button:not(:disabled), [role="button"] {
+    cursor: pointer;
+  }
 }
 
 @layer utilities {
-  .leather-texture {
-      background-color: #2c2416;
-      background-image: radial-gradient(circle at 2px 2px, rgba(0,0,0,0.15) 1px, transparent 0);
-      background-size: 4px 4px;
+  .scrollbar-none {
+    scrollbar-width: none;
   }
-  .gold-border {
-      border: 2px solid #f4c025;
-      box-shadow: inset 0 0 15px rgba(244, 192, 37, 0.3), 0 0 10px rgba(0,0,0,0.5);
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
-  .page-curl {
-      background: linear-gradient(135deg, transparent 50%, rgba(244, 192, 37, 0.4) 50%, #f4c025 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
   }
 }

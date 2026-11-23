@@ -1,177 +1,144 @@
-import { useState, type ReactNode } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { House, BookOpen, UserRound, Shield, LogOut } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { Avatar, Logo } from './ui';
+import { getPlan } from '../lib/plans';
 
-function getPlanLabel(planType?: string): string {
-  switch (planType) {
-    case 'premium': return 'Plano Premium';
-    case 'basic':
-    case 'free':
-    default:
-      return 'Plano Básico';
-  }
-}
-
-interface NavItem {
-  to: string;
-  icon: string;
-  label: string;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { to: '/overview', icon: 'dashboard', label: 'Visão Geral' },
-  { to: '/albums', icon: 'auto_stories', label: 'Meus Álbuns' },
-  { to: '/uploads', icon: 'cloud_upload', label: 'Uploads' },
-];
-
-const SETTINGS_ITEMS: NavItem[] = [
-  { to: '/account', icon: 'settings', label: 'Conta' },
-  { to: '/privacy', icon: 'lock', label: 'Privacidade' },
+const NAV = [
+  { to: '/inicio', label: 'Início', Icon: House, match: ['/inicio'] },
+  { to: '/albums', label: 'Meus álbuns', Icon: BookOpen, match: ['/albums'] },
+  { to: '/conta', label: 'Conta', Icon: UserRound, match: ['/conta', '/privacidade'] },
 ];
 
 interface AppLayoutProps {
   children: ReactNode;
+  /** Classe de largura do conteúdo. Padrão: 1160 px (1280 − 2×60 do handoff). */
   maxWidth?: string;
+  /** Item da navegação destacado quando a rota não está na lista (ex.: edição de álbum → Meus álbuns). */
+  activeOverride?: string;
 }
 
-export default function AppLayout({ children, maxWidth = 'max-w-6xl' }: AppLayoutProps) {
-  const navigate = useNavigate();
+export default function AppLayout({ children, maxWidth = 'max-w-[1160px]', activeOverride }: AppLayoutProps) {
   const location = useLocation();
-  const { user: authUser, logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  const isActive = (path: string) => location.pathname === path || location.pathname.startsWith(path + '/');
+  const isActive = (item: (typeof NAV)[number]) =>
+    activeOverride ? activeOverride === item.to : item.match.some(p => location.pathname === p || location.pathname.startsWith(p + '/'));
 
-  const SidebarContent = () => (
-    <>
-      <div className="p-5 md:p-6 flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-background-dark flex-shrink-0">
-          <span className="material-symbols-outlined">auto_awesome_motion</span>
-        </div>
-        <div>
-          <h1 className="text-lg font-bold leading-none">Memórias</h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Álbum de Luxo</p>
-        </div>
-        {/* Close button - mobile only */}
-        <button
-          onClick={() => setSidebarOpen(false)}
-          className="ml-auto min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors lg:hidden"
-          aria-label="Fechar menu"
-        >
-          <span className="material-symbols-outlined text-slate-400">close</span>
-        </button>
-      </div>
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
-      <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
-        {NAV_ITEMS.map(item => (
-          <Link
-            key={item.to}
-            to={item.to}
-            onClick={() => setSidebarOpen(false)}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-              isActive(item.to)
-                ? 'bg-primary/20 text-slate-900 dark:text-white border-l-4 border-primary'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-primary/10'
-            }`}
-          >
-            <span className={`material-symbols-outlined ${isActive(item.to) ? 'text-primary' : ''}`}
-              style={isActive(item.to) ? { fontVariationSettings: "'FILL' 1" } : undefined}>
-              {item.icon}
-            </span>
-            <span className={`text-sm ${isActive(item.to) ? 'font-bold' : 'font-medium'}`}>{item.label}</span>
-          </Link>
-        ))}
+  useEffect(() => setMenuOpen(false), [location.pathname]);
 
-        <div className="pt-4 pb-2 text-[10px] uppercase tracking-wider text-slate-400 font-bold px-3">Configurações</div>
-
-        {SETTINGS_ITEMS.map(item => (
-          <Link
-            key={item.to}
-            to={item.to}
-            onClick={() => setSidebarOpen(false)}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-              isActive(item.to)
-                ? 'bg-primary/20 text-slate-900 dark:text-white border-l-4 border-primary'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-primary/10'
-            }`}
-          >
-            <span className={`material-symbols-outlined ${isActive(item.to) ? 'text-primary' : ''}`}
-              style={isActive(item.to) ? { fontVariationSettings: "'FILL' 1" } : undefined}>
-              {item.icon}
-            </span>
-            <span className={`text-sm ${isActive(item.to) ? 'font-bold' : 'font-medium'}`}>{item.label}</span>
-          </Link>
-        ))}
-      </nav>
-
-      <div className="p-4 border-t border-primary/10 space-y-2">
-        <Link to="/account" onClick={() => setSidebarOpen(false)} className="block">
-          <div className="bg-primary/5 hover:bg-primary/10 transition-colors rounded-xl p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
-              <span className="material-symbols-outlined text-primary">person</span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold truncate">{authUser?.name || '...'}</p>
-              <p className={`text-xs truncate font-medium ${authUser?.plan_type === 'premium' ? 'text-primary' : 'text-slate-500'}`}>
-                {getPlanLabel(authUser?.plan_type)}
-              </p>
-            </div>
-            <span className="material-symbols-outlined text-slate-400 text-sm">chevron_right</span>
-          </div>
-        </Link>
-        <button
-          onClick={() => { logout(); navigate('/login'); }}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-        >
-          <span className="material-symbols-outlined text-[20px]">logout</span>
-          <span className="text-sm font-medium">Sair</span>
-        </button>
-      </div>
-    </>
-  );
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
 
   return (
-    <div className="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen">
-      <div className="flex h-screen overflow-hidden">
-        {/* Mobile Sidebar Overlay */}
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
+    <div className="min-h-dvh bg-cream text-ink">
+      <a href="#conteudo" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-full focus:bg-paper focus:px-4 focus:py-2">
+        Pular para o conteúdo
+      </a>
 
-        {/* Sidebar */}
-        <aside className={`
-          fixed lg:static inset-y-0 left-0 z-50 lg:z-auto
-          w-72 flex-shrink-0 border-r border-primary/20 bg-white dark:bg-background-dark flex flex-col
-          transform transition-transform duration-300 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-        `}>
-          <SidebarContent />
-        </aside>
+      <header className="sticky top-0 z-40 border-b border-divider bg-cream/95 backdrop-blur supports-[backdrop-filter]:bg-cream/85">
+        <div className="mx-auto flex h-[72px] max-w-[1280px] items-center gap-6 px-4 sm:px-8 lg:px-[60px]">
+          <Logo to="/inicio" />
 
-        {/* Main Content */}
-        <main className="flex-1 flex flex-col overflow-y-auto bg-background-light dark:bg-background-dark min-w-0">
-          {/* Top bar with hamburger */}
-          <div className="flex items-center gap-3 px-4 py-3 bg-white/50 dark:bg-background-dark/50 backdrop-blur-md sticky top-0 z-10 border-b border-slate-100 dark:border-slate-800 lg:hidden">
+          <nav aria-label="Principal" className="hidden items-center gap-1 md:flex">
+            {NAV.map(item => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                aria-current={isActive(item) ? 'page' : undefined}
+                className={`inline-flex h-10 items-center rounded-full px-5 text-sm transition-colors ${
+                  isActive(item) ? 'bg-sand font-semibold text-ink' : 'text-muted hover:text-ink'
+                }`}
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
+
+          <div ref={menuRef} className="relative ml-auto">
             <button
-              onClick={() => setSidebarOpen(true)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              aria-label="Abrir menu"
+              type="button"
+              onClick={() => setMenuOpen(o => !o)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Menu da conta"
+              className="flex items-center gap-2 rounded-full p-1 hover:bg-sand/70"
             >
-              <span className="material-symbols-outlined">menu</span>
+              <Avatar name={user?.name} src={user?.avatar_url} size={34} />
             </button>
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400 truncate">
-              {authUser?.name || 'Memórias'}
-            </span>
+            {menuOpen && (
+              <div role="menu" className="absolute right-0 top-[calc(100%+8px)] w-64 animate-pop-in rounded-[22px] border border-divider bg-paper p-2">
+                <div className="px-3 pb-2 pt-2">
+                  <p className="truncate font-bold text-ink">{user?.name}</p>
+                  <p className="truncate text-sm text-muted">{user?.email}</p>
+                  <p className="mt-1 text-sm text-sage-text">Plano {getPlan(user?.plan_type).name}</p>
+                </div>
+                <div className="my-1 h-px bg-divider" />
+                <MenuLink to="/conta" icon={<UserRound className="size-4" />}>Conta e planos</MenuLink>
+                <MenuLink to="/privacidade" icon={<Shield className="size-4" />}>Privacidade</MenuLink>
+                <button
+                  role="menuitem"
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex h-11 w-full items-center gap-3 rounded-[14px] px-3 text-sm text-ink hover:bg-sand"
+                >
+                  <LogOut className="size-4" /> Sair
+                </button>
+              </div>
+            )}
           </div>
+        </div>
+      </header>
 
-          <div className={`${maxWidth} mx-auto w-full px-4 md:px-8 py-6 md:py-8 flex-1`}>
-            {children}
-          </div>
-        </main>
-      </div>
+      <main id="conteudo" className={`mx-auto w-full ${maxWidth} px-4 pb-28 pt-6 sm:px-8 md:pb-16 md:pt-8 lg:px-0`}>
+        {children}
+      </main>
+
+      {/* Navegação inferior no mobile */}
+      <nav aria-label="Principal" className="fixed inset-x-0 bottom-0 z-40 border-t border-divider bg-cream/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        <div className="mx-auto grid max-w-md grid-cols-3">
+          {NAV.map(({ to, label, Icon, ...item }) => {
+            const active = isActive({ to, label, Icon, ...item });
+            return (
+              <Link key={to} to={to} aria-current={active ? 'page' : undefined} className="flex h-16 flex-col items-center justify-center gap-1 text-xs">
+                <span className={`inline-flex h-8 w-14 items-center justify-center rounded-full ${active ? 'bg-sand text-ink' : 'text-muted'}`}>
+                  <Icon className="size-5" aria-hidden />
+                </span>
+                <span className={active ? 'font-bold text-ink' : 'text-muted'}>{label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </div>
+  );
+}
+
+function MenuLink({ to, icon, children }: { to: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <Link role="menuitem" to={to} className="flex h-11 items-center gap-3 rounded-[14px] px-3 text-sm text-ink hover:bg-sand">
+      {icon}
+      {children}
+    </Link>
   );
 }
