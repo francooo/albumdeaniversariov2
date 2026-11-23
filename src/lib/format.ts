@@ -9,13 +9,9 @@ export function formatBytes(bytes: number): string {
   return `${n} B`;
 }
 
-/** "1,2 / 5 GB" — formato do handoff para o uso de espaço. */
+/** "120 MB / 300 MB" — uso de espaço no formato do handoff. */
 export function formatStorage(used: number, limit: number): string {
-  const u = Number(used) || 0;
-  const l = Number(limit) || 0;
-  const limitGb = (l / GB).toLocaleString('pt-BR', { maximumFractionDigits: 0 });
-  if (u < 100 * MB) return `${formatBytes(u)} / ${limitGb} GB`;
-  return `${(u / GB).toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} / ${limitGb} GB`;
+  return `${formatBytes(Number(used) || 0)} / ${formatBytes(Number(limit) || 0)}`;
 }
 
 export function plural(n: number, singular: string, pluralForm = `${singular}s`) {

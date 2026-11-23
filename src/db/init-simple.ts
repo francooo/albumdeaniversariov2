@@ -47,7 +47,7 @@ async function initializeDatabase() {
         google_id VARCHAR(255) UNIQUE,
         plan_type VARCHAR(50) DEFAULT 'free',
         storage_used BIGINT DEFAULT 0,
-        storage_limit BIGINT DEFAULT 5368709120,
+        storage_limit BIGINT DEFAULT 314572800,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         last_login TIMESTAMP WITH TIME ZONE

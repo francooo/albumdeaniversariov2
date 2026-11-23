@@ -1,10 +1,10 @@
 /**
  * Fonte única dos limites de plano (Básico / Premium).
- * Valores do handoff (conta_planos.xml): Básico até 3 álbuns e 5 GB; Premium ilimitado e 20 GB.
+ * Básico: até 3 álbuns e 300 MB. Premium: ilimitado e 500 MB (cabe no banco Neon gratuito, de 512 MB no total).
  */
 export type PlanId = 'basic' | 'premium';
 
-const GB = 1024 ** 3;
+const MB = 1024 ** 2;
 
 export interface PlanInfo {
   id: PlanId;
@@ -22,18 +22,18 @@ export const PLANS: Record<PlanId, PlanInfo> = {
     name: 'Básico',
     priceLabel: 'Gratuito',
     albumLimit: 3,
-    storageBytes: 5 * GB,
+    storageBytes: 300 * MB,
     proDesigns: false,
-    benefits: ['Até 3 álbuns', '5 GB de armazenamento', 'Temas básicos', 'Suporte por e-mail'],
+    benefits: ['Até 3 álbuns', '300 MB de armazenamento', 'Temas básicos', 'Suporte por e-mail'],
   },
   premium: {
     id: 'premium',
     name: 'Premium',
     priceLabel: 'Tudo do Básico e mais',
     albumLimit: Infinity,
-    storageBytes: 20 * GB,
+    storageBytes: 500 * MB,
     proDesigns: true,
-    benefits: ['Álbuns ilimitados', '20 GB de armazenamento', 'Temas exclusivos', 'Suporte prioritário', 'Estilos premium ilimitados'],
+    benefits: ['Álbuns ilimitados', '500 MB de armazenamento', 'Temas exclusivos', 'Suporte prioritário', 'Estilos premium ilimitados'],
   },
 };
 
@@ -46,11 +46,9 @@ export function getPlan(planType?: string | null): PlanInfo {
   return PLANS[normalizePlan(planType)];
 }
 
-/** Limite efetivo: o maior entre o valor salvo e o do plano (corrige usuários antigos gravados com 1 GB). */
-export function storageLimitFor(planType?: string | null, stored?: number | string | null): number {
-  const planLimit = getPlan(planType).storageBytes;
-  const s = Number(stored) || 0;
-  return Math.max(planLimit, s);
+/** Limite efetivo: sempre o do plano (valores antigos gravados no banco, como 1 GB ou 5 GB, são ignorados). */
+export function storageLimitFor(planType?: string | null, _stored?: number | string | null): number {
+  return getPlan(planType).storageBytes;
 }
 
 export function canCreateAlbum(planType: string | null | undefined, currentCount: number): boolean {

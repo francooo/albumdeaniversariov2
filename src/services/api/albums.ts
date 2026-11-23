@@ -1,6 +1,6 @@
 import { sql } from '../../db/connection';
 import { migrationsReady, generateShareToken } from './shares';
-import { getPlan, normalizePlan } from '../../lib/plans';
+import { getPlan, normalizePlan, PLANS } from '../../lib/plans';
 
 export interface Album {
   id: string;
@@ -110,7 +110,7 @@ export async function getOrCreateDefaultUser(): Promise<User> {
     console.log('Creating new default user...');
     const newUser = await sql`
       INSERT INTO users (email, name, plan_type, storage_used, storage_limit)
-      VALUES ('default@example.com', 'Usuário Padrão', 'basic', 0, 1073741824)
+      VALUES ('default@example.com', 'Usuário Padrão', 'basic', 0, ${PLANS.basic.storageBytes})
       RETURNING *
     `;
     
@@ -338,7 +338,7 @@ export async function getOrCreateDefaultAlbum(userId?: string): Promise<Album | 
       // Create a default user
       const newUser = await sql`
         INSERT INTO users (email, name, plan_type, storage_used, storage_limit)
-        VALUES ('default@example.com', 'Default User', 'basic', 0, 1073741824)
+        VALUES ('default@example.com', 'Default User', 'basic', 0, ${PLANS.basic.storageBytes})
         RETURNING id
       `;
       actualUserId = (newUser[0] as { id: string }).id;
