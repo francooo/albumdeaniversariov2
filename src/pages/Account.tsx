@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import AppLayout from '../components/AppLayout';
 import { Avatar, Badge, Button, Card, Field, Input, PageLoader, PasswordInput } from '../components/ui';
-import { changePassword, getAlbumQuota, getUserById, updateUserPlan, updateUserProfile } from '../services/api';
+import { changePassword, getAlbumQuota, getUserById, updateUserPlan, updateUserProfile, uploadAvatar } from '../services/api';
 import type { User } from '../services/api/users';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -17,7 +17,7 @@ export default function Account() {
   const location = useLocation();
   const avatarInput = useRef<HTMLInputElement>(null);
 
-  const [user, setUser] = useState<(User & { password_hash?: string | null; google_id?: string | null }) | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [albumCount, setAlbumCount] = useState(0);
 
@@ -92,8 +92,7 @@ export default function Account() {
     if (err) return toast.error(err);
     setAvatarBusy(true);
     try {
-      const dataUrl = await compressSingle(file, 256);
-      const updated = await updateUserProfile(user.id, { avatar_url: dataUrl });
+      const updated = await uploadAvatar(await compressSingle(file, 256));
       setUser(u => ({ ...u!, avatar_url: updated.avatar_url }));
       updateUser({ avatar_url: updated.avatar_url });
       toast.success('Foto atualizada');
@@ -152,7 +151,7 @@ export default function Account() {
   }
 
   const current = normalizePlan(user.plan_type);
-  const googleOnly = !!user.google_id && !user.password_hash;
+  const googleOnly = !!user.google_linked && !user.has_password;
 
   return (
     <AppLayout>

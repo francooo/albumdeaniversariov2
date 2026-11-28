@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { X } from 'lucide-react';
-import { validateShareToken, getSectionsByAlbum, getMediaByAlbum, claimAlbumShare, type Section, type Media } from '../services/api';
+import { getPublicAlbum, claimAlbumShare, type Section, type Media } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { BookScreen } from '../components/book/BookScreen';
@@ -39,15 +39,15 @@ export default function PublicAlbumViewer() {
   useEffect(() => {
     (async () => {
       try {
-        const ctx = await validateShareToken(token);
-        if (!ctx.valid || !ctx.album) {
-          setError((ctx.error as ErrorKind) || 'not_found');
+        // Uma única chamada com o token: álbum, seções visíveis e fotos
+        const ctx = await getPublicAlbum(token);
+        if (ctx.valid === false) {
+          setError(ctx.error || 'not_found');
           return;
         }
-        const a = ctx.album;
-        const [secs, m] = await Promise.all([getSectionsByAlbum(a.id), getMediaByAlbum(a.id)]);
+        const { album: a, sections: secs, media: m } = ctx;
         const cover = m.find(x => x.is_cover) ?? m.find(x => x.file_type?.startsWith('image/'));
-        setSections(secs.filter(s => s.status !== 'hidden'));
+        setSections(secs);
         setMedia(m);
         setAlbum({
           id: a.id,
@@ -72,7 +72,7 @@ export default function PublicAlbumViewer() {
 
   // Quem está logado e abre o link guarda o álbum na conta (somente leitura)
   useEffect(() => {
-    if (user && album) claimAlbumShare(token, user.id).catch(console.error);
+    if (user && album) claimAlbumShare(token).catch(console.error);
   }, [user, album, token]);
 
   const pages = useMemo(() => paginate(groupPhotos(sections, media), album?.layout, { skipEmpty: true }), [sections, media, album?.layout]);

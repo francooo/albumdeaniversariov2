@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { compressImage, validateImageFile } from './imageCompress';
-import { uploadMedia, type Media } from '../services/api';
+import { uploadPhoto, type Media } from '../services/api';
 
 export type UploadStatus = 'queued' | 'uploading' | 'done' | 'error';
 
@@ -20,7 +20,7 @@ interface Options {
   onStorageFull: (message: string) => void;
 }
 
-/** Fila sequencial de envio: comprime no navegador e grava no banco, uma foto por vez. */
+/** Fila sequencial de envio: comprime no navegador e envia ao armazenamento, uma foto por vez. */
 export function useUploadQueue({ userId, albumId, onUploaded, onStorageFull }: Options) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const running = useRef(false);
@@ -42,19 +42,8 @@ export function useUploadQueue({ userId, albumId, onUploaded, onStorageFull }: O
         patch(next.id, { status: 'uploading' });
         itemsRef.current = itemsRef.current.map(i => (i.id === next.id ? { ...i, status: 'uploading' } : i));
         try {
-          const img = await compressImage(next.file);
-          const media = await uploadMedia({
-            user_id: userId,
-            album_id: albumId,
-            section_id: next.sectionId,
-            file_name: next.file.name,
-            original_url: img.dataUrl,
-            thumbnail_url: img.thumbDataUrl,
-            file_type: 'image/jpeg',
-            file_size: img.bytes,
-            width: img.width,
-            height: img.height,
-          });
+          const image = await compressImage(next.file);
+          const media = await uploadPhoto({ albumId, sectionId: next.sectionId, fileName: next.file.name, image });
           patch(next.id, { status: 'done' });
           itemsRef.current = itemsRef.current.map(i => (i.id === next.id ? { ...i, status: 'done' } : i));
           callbacks.current.onUploaded(media);

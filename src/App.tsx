@@ -8,7 +8,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useParam
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import { runColumnMigrations } from './services/api/shares';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Viewer from './pages/Viewer';
@@ -50,10 +49,6 @@ function RedirectWithId({ to }: { to: (id: string) => string }) {
 const guard = (el: ReactNode) => <ProtectedRoute>{el}</ProtectedRoute>;
 
 export default function App() {
-  useEffect(() => {
-    runColumnMigrations();
-  }, []);
-
   return (
     <AuthProvider>
       <ToastProvider>

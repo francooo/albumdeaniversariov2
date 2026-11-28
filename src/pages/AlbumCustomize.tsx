@@ -15,6 +15,7 @@ import {
   getSectionsByAlbum,
   setCoverMedia,
   updateAlbumDesign,
+  uploadAlbumCover,
   type Album,
   type MediaThumb,
   type Section,
@@ -22,9 +23,10 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getPlan } from '../lib/plans';
-import { ACCEPT_ATTR, compressImage, validateImageFile } from '../lib/imageCompress';
+import { ACCEPT_ATTR, compressImage, validateImageFile, type CompressedImage } from '../lib/imageCompress';
 
-type CoverChoice = { kind: 'saved' } | { kind: 'media'; media: MediaThumb } | { kind: 'upload'; dataUrl: string; thumb: string };
+/** 'upload': imagem já comprimida no navegador, enviada ao armazenamento só ao salvar. */
+type CoverChoice = { kind: 'saved' } | { kind: 'media'; media: MediaThumb } | { kind: 'upload'; image: CompressedImage; preview: string };
 
 export default function AlbumCustomize() {
   const { albumId = '' } = useParams();
@@ -85,7 +87,14 @@ export default function AlbumCustomize() {
     return album.cover_thumbnail_url || album.cover_image_url || media.find(m => m.is_cover)?.thumbnail_url || media[0]?.thumbnail_url || sections.find(s => s.image_url)?.image_url || null;
   }, [album, media, sections]);
 
-  const coverUrl = cover.kind === 'media' ? cover.media.thumbnail_url : cover.kind === 'upload' ? cover.thumb : savedCoverUrl;
+  const coverUrl = cover.kind === 'media' ? cover.media.thumbnail_url : cover.kind === 'upload' ? cover.preview : savedCoverUrl;
+
+  // Libera a prévia local quando a capa enviada é trocada ou a tela fecha
+  useEffect(() => {
+    if (cover.kind !== 'upload') return;
+    const url = cover.preview;
+    return () => URL.revokeObjectURL(url);
+  }, [cover]);
 
   const dirty =
     !!album && (theme !== getTheme(album.theme).id || layout !== getLayout(album.layout).id || style !== getStyle(album.style).id || cover.kind !== 'saved');
@@ -122,12 +131,13 @@ export default function AlbumCustomize() {
     if (!album) return;
     setSaving(true);
     try {
+      const uploaded = cover.kind === 'upload' ? await uploadAlbumCover(album.id, cover.image) : null;
       let updated = await updateAlbumDesign(album.id, {
         theme,
         layout,
         style,
-        cover_image_url: cover.kind === 'upload' ? cover.dataUrl : undefined,
-        cover_thumbnail_url: cover.kind === 'upload' ? cover.thumb : undefined,
+        cover_image_url: uploaded?.cover_image_url,
+        cover_thumbnail_url: uploaded?.cover_thumbnail_url,
       });
       if (cover.kind === 'media') {
         await setCoverMedia(album.id, cover.media.id);
@@ -363,8 +373,8 @@ function CoverPicker({
     if (err) return onError(err);
     setProcessing(true);
     try {
-      const img = await compressImage(file);
-      onPick({ kind: 'upload', dataUrl: img.dataUrl, thumb: img.thumbDataUrl });
+      const image = await compressImage(file);
+      onPick({ kind: 'upload', image, preview: URL.createObjectURL(image.thumbBlob) });
     } catch {
       onError('Não foi possível ler esta imagem.');
     } finally {

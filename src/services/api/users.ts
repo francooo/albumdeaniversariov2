@@ -1,6 +1,4 @@
-import { sql } from '../../db/connection';
-import { PLANS, storageLimitFor } from '../../lib/plans';
-import { migrationsReady } from './shares';
+import { ApiError, http } from './http';
 
 export interface User {
   id: string;
@@ -19,6 +17,9 @@ export interface User {
   email_notifications: boolean;
   marketing_emails: boolean;
   default_album_visibility?: 'private' | 'link' | 'public';
+  /** A conta tem senha própria (quem só entra pelo Google não tem). */
+  has_password?: boolean;
+  google_linked?: boolean;
   marketing_opt_in_at?: string;
   marketing_opt_out_at?: string;
   deleted_at?: string;
@@ -45,7 +46,6 @@ export interface UpdateProfileInput {
   email?: string;
   phone?: string;
   birth_date?: string;
-  avatar_url?: string;
 }
 
 export interface UpdatePrivacyInput {
@@ -57,349 +57,74 @@ export interface UpdatePrivacyInput {
   default_album_visibility?: 'private' | 'link' | 'public';
 }
 
-// Simple hash function for demo purposes
-// In production, use bcrypt or similar
-function simpleHash(password: string): string {
-  let hash = 0;
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return 'hash_' + Math.abs(hash).toString(16);
+// ---------- Sessão ----------
+
+/** Cria a conta e já abre a sessão. */
+export function registerUser(input: RegisterInput): Promise<User> {
+  return http.post<User>('/auth/register', input);
 }
 
-// Register a new user
-export async function registerUser(input: RegisterInput): Promise<User> {
-  if (!sql) throw new Error('Database not available');
-  
-  // Check if email already exists
-  const existing = await sql`SELECT id FROM users WHERE email = ${input.email}`;
-  if (existing.length > 0) {
-    throw new Error('Email já cadastrado');
-  }
-  
-  const passwordHash = simpleHash(input.password);
-  
-  const result = await sql`
-    INSERT INTO users (name, email, password_hash, birth_date, plan_type, storage_used, storage_limit)
-    VALUES (
-      ${input.name}, 
-      ${input.email}, 
-      ${passwordHash}, 
-      ${input.birth_date},
-      'basic',
-      0,
-      ${PLANS.basic.storageBytes}
-    )
-    RETURNING *
-  `;
-  
-  return result[0] as User;
-}
-
-// Login user
+/** Abre a sessão. E-mail ou senha errados devolvem null. */
 export async function loginUser(input: LoginInput): Promise<User | null> {
-  if (!sql) throw new Error('Database not available');
-  
-  const passwordHash = simpleHash(input.password);
-  
-  const result = await sql`
-    SELECT * FROM users 
-    WHERE email = ${input.email} AND password_hash = ${passwordHash}
-  `;
-  
-  if (result.length === 0) {
-    return null;
+  try {
+    return await http.post<User>('/auth/login', input);
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'invalid_credentials') return null;
+    throw err;
   }
-  
-  // Update last login
-  await sql`UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = ${result[0].id}`;
-  
-  return result[0] as User;
 }
 
-// Login or register user via Google OAuth
-export async function loginWithGoogle(googleProfile: {
-  googleId: string;
-  email: string;
-  name: string;
-  avatarUrl?: string;
-}): Promise<User> {
-  if (!sql) throw new Error('Database not available');
+/** O servidor confere o token com o Google antes de abrir a sessão. */
+export function loginWithGoogle(accessToken: string): Promise<User> {
+  return http.post<User>('/auth/google', { accessToken });
+}
 
-  // Ensure google_id and avatar_url columns exist (safe if already present)
-  await Promise.all([
-    sql`ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)`,
-    sql`ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
-  ]).catch(() => {});
-
-  const { googleId, email, name, avatarUrl } = googleProfile;
-
-  // 1. Try to find by google_id
-  let existing = await sql`
-    SELECT * FROM users WHERE google_id = ${googleId} LIMIT 1
-  `;
-
-  if (existing.length > 0) {
-    // Update last login and avatar
-    await sql`
-      UPDATE users SET
-        updated_at = CURRENT_TIMESTAMP,
-        avatar_url = COALESCE(${avatarUrl ?? null}, avatar_url)
-      WHERE id = ${existing[0].id}
-    `;
-    return existing[0] as User;
+/** Usuário da sessão atual, ou null se não houver sessão. */
+export async function getSessionUser(): Promise<User | null> {
+  try {
+    return await http.get<User>('/auth/me');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
   }
-
-  // 2. Try to find by email (link Google to existing account)
-  existing = await sql`
-    SELECT * FROM users WHERE email = ${email} LIMIT 1
-  `;
-
-  if (existing.length > 0) {
-    await sql`
-      UPDATE users SET
-        google_id = ${googleId},
-        avatar_url = COALESCE(${avatarUrl ?? null}, avatar_url),
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${existing[0].id}
-    `;
-    const updated = await sql`SELECT * FROM users WHERE id = ${existing[0].id} LIMIT 1`;
-    return updated[0] as User;
-  }
-
-  // 3. Create new user
-  const result = await sql`
-    INSERT INTO users (name, email, google_id, avatar_url, plan_type, storage_used, storage_limit)
-    VALUES (
-      ${name},
-      ${email},
-      ${googleId},
-      ${avatarUrl ?? null},
-      'basic',
-      0,
-      ${PLANS.basic.storageBytes}
-    )
-    RETURNING *
-  `;
-
-  return result[0] as User;
 }
 
-// Get user by ID
-export async function getUserById(userId: string): Promise<User | null> {
-  if (!sql) throw new Error('Database not available');
-  
-  const result = await sql`SELECT * FROM users WHERE id = ${userId}`;
-  
-  return result[0] as User || null;
+export function logoutSession(): Promise<void> {
+  return http.post('/auth/logout');
 }
 
-// Get user by email
-export async function getUserByEmail(email: string): Promise<User | null> {
-  if (!sql) throw new Error('Database not available');
-  
-  const result = await sql`SELECT * FROM users WHERE email = ${email}`;
-  
-  return result[0] as User || null;
+// ---------- Conta (sempre a do usuário logado; parâmetros userId são ignorados) ----------
+
+export function getUserById(_userId?: string): Promise<User | null> {
+  return http.get<User>('/me');
 }
 
-// Update user profile
-export async function updateUserProfile(userId: string, input: UpdateProfileInput): Promise<User> {
-  if (!sql) throw new Error('Database not available');
-  
-  const result = await sql`
-    UPDATE users 
-    SET 
-      name = COALESCE(${input.name ?? null}, name),
-      public_name = COALESCE(${input.public_name ?? null}, public_name),
-      email = COALESCE(${input.email ?? null}, email),
-      phone = COALESCE(${input.phone ?? null}, phone),
-      birth_date = COALESCE(${input.birth_date ?? null}, birth_date),
-      avatar_url = COALESCE(${input.avatar_url ?? null}, avatar_url),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ${userId}
-    RETURNING *
-  `;
-  
-  return result[0] as User;
+export function updateUserProfile(_userId: string, input: UpdateProfileInput): Promise<User> {
+  return http.patch<User>('/me', input);
 }
 
-// Update privacy settings with LGPD compliance
-export async function updatePrivacySettings(
-  userId: string, 
-  input: UpdatePrivacyInput,
-  ipAddress?: string
-): Promise<User> {
-  if (!sql) throw new Error('Database not available');
-  
-  // Handle marketing emails with LGPD timestamps
-  let marketingOptInAt = null;
-  let marketingOptOutAt = null;
-  
-  if (input.marketing_emails !== undefined) {
-    if (input.marketing_emails) {
-      marketingOptInAt = new Date().toISOString();
-    } else {
-      marketingOptOutAt = new Date().toISOString();
-    }
-  }
-  
-  await migrationsReady();
-  const result = await sql`
-    UPDATE users 
-    SET 
-      default_album_visibility = COALESCE(${input.default_album_visibility ?? null}, default_album_visibility),
-      is_public_profile = COALESCE(${input.is_public_profile ?? null}, is_public_profile),
-      albums_public = COALESCE(${input.albums_public ?? null}, albums_public),
-      show_email = COALESCE(${input.show_email ?? null}, show_email),
-      email_notifications = COALESCE(${input.email_notifications ?? null}, email_notifications),
-      marketing_emails = COALESCE(${input.marketing_emails ?? null}, marketing_emails),
-      marketing_opt_in_at = COALESCE(${marketingOptInAt}, marketing_opt_in_at),
-      marketing_opt_out_at = COALESCE(${marketingOptOutAt}, marketing_opt_out_at),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ${userId}
-    RETURNING *
-  `;
-  
-  return result[0] as User;
+export function updatePrivacySettings(_userId: string, input: UpdatePrivacyInput): Promise<User> {
+  return http.patch<User>('/me/privacy', input);
 }
 
-// Change password
-export async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<boolean> {
-  if (!sql) throw new Error('Database not available');
-  
-  const currentHash = simpleHash(currentPassword);
-  
-  // Verify current password
-  const user = await sql`SELECT id FROM users WHERE id = ${userId} AND password_hash = ${currentHash}`;
-  
-  if (user.length === 0) {
-    return false;
-  }
-  
-  const newHash = simpleHash(newPassword);
-  
-  await sql`UPDATE users SET password_hash = ${newHash}, updated_at = CURRENT_TIMESTAMP WHERE id = ${userId}`;
-  
-  return true;
+/** false quando a senha atual não confere. */
+export async function changePassword(_userId: string, currentPassword: string, newPassword: string): Promise<boolean> {
+  return (await http.post<{ ok: boolean }>('/me/password', { currentPassword, newPassword })).ok;
 }
 
-// Request data export (LGPD Article 18)
-export async function requestDataExport(userId: string): Promise<{ requestId: string; message: string }> {
-  if (!sql) throw new Error('Database not available');
-  
-  // Create export request
-  const result = await sql`
-    INSERT INTO data_export_requests (user_id, status, expires_at)
-    VALUES (${userId}, 'pending', CURRENT_TIMESTAMP + INTERVAL '7 days')
-    RETURNING id
-  `;
-  
-  // In a real implementation, this would trigger a background job
-  // to compile all user data into a downloadable file
-  
-  return {
-    requestId: result[0].id,
-    message: 'Solicitação recebida. Seus dados serão preparados e enviados por e-mail em até 24 horas.'
-  };
+export function requestDataExport(_userId?: string): Promise<{ requestId: string; message: string }> {
+  return http.post('/me/data-export');
 }
 
-// Get data export status
-export async function getDataExportStatus(requestId: string): Promise<{
-  status: string;
-  fileUrl?: string;
-  expiresAt?: string;
-}> {
-  if (!sql) throw new Error('Database not available');
-  
-  const result = await sql`
-    SELECT status, file_url, expires_at 
-    FROM data_export_requests 
-    WHERE id = ${requestId}
-  `;
-  
-  if (result.length === 0) {
-    throw new Error('Export request not found');
-  }
-  
-  return {
-    status: result[0].status,
-    fileUrl: result[0].file_url,
-    expiresAt: result[0].expires_at
-  };
+export function requestAccountDeletion(_userId?: string, _confirmationMethod?: 'password' | 'text'): Promise<void> {
+  return http.post('/me/deletion');
 }
 
-// Request account deletion (soft delete with 30-day grace period - LGPD compliance)
-export async function requestAccountDeletion(userId: string, confirmationMethod: 'password' | 'text'): Promise<void> {
-  if (!sql) throw new Error('Database not available');
-  
-  // Soft delete: mark for deletion with 30-day grace period
-  await sql`
-    UPDATE users 
-    SET 
-      deletion_requested_at = CURRENT_TIMESTAMP,
-      deleted_at = CURRENT_TIMESTAMP + INTERVAL '30 days',
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ${userId}
-  `;
-  
-  // In a real implementation, this would:
-  // 1. Send confirmation email with cancellation link
-  // 2. Schedule hard deletion after 30 days
-  // 3. Invalidate all user sessions
+export function updateUserPlan(_userId: string, planType: 'basic' | 'premium'): Promise<User> {
+  return http.post<User>('/me/plan', { plan: planType });
 }
 
-// Cancel account deletion request
-export async function cancelAccountDeletion(userId: string): Promise<void> {
-  if (!sql) throw new Error('Database not available');
-  
-  await sql`
-    UPDATE users 
-    SET 
-      deletion_requested_at = NULL,
-      deleted_at = NULL,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ${userId}
-  `;
-}
-
-// Update user plan
-export async function updateUserPlan(userId: string, planType: 'basic' | 'premium'): Promise<User> {
-  if (!sql) throw new Error('Database not available');
-
-  const storageLimit = PLANS[planType].storageBytes;
-
-  const result = await sql`
-    UPDATE users 
-    SET 
-      plan_type = ${planType},
-      storage_limit = ${storageLimit},
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ${userId}
-    RETURNING *
-  `;
-
-  return result[0] as User;
-}
-
-// Hard delete user account (for admin use or after grace period)
-export async function permanentlyDeleteUserAccount(userId: string): Promise<void> {
-  if (!sql) throw new Error('Database not available');
-  
-  // Delete all user's albums (cascades to sections, pages, etc.)
-  await sql`DELETE FROM albums WHERE user_id = ${userId}`;
-  
-  // Delete data export requests
-  await sql`DELETE FROM data_export_requests WHERE user_id = ${userId}`;
-  
-  // Delete user
-  await sql`DELETE FROM users WHERE id = ${userId}`;
-}
-
-// Get user statistics for overview
-export async function getUserStats(userId: string): Promise<{
+export function getUserStats(_userId?: string): Promise<{
   totalAlbums: number;
   totalSections: number;
   totalPhotos: number;
@@ -407,34 +132,5 @@ export async function getUserStats(userId: string): Promise<{
   storageUsed: number;
   storageLimit: number;
 }> {
-  if (!sql) throw new Error('Database not available');
-  
-  const albumStats = await sql`
-    SELECT 
-      COUNT(DISTINCT a.id) as total_albums,
-      COALESCE(SUM(a.total_photos), 0) as total_photos,
-      COALESCE(SUM(a.total_videos), 0) as total_videos
-    FROM albums a
-    WHERE a.user_id = ${userId}
-  `;
-  
-  const sectionStats = await sql`
-    SELECT COUNT(*) as total_sections
-    FROM sections s
-    JOIN albums a ON s.album_id = a.id
-    WHERE a.user_id = ${userId}
-  `;
-  
-  const userStats = await sql`
-    SELECT storage_used, storage_limit, plan_type FROM users WHERE id = ${userId}
-  `;
-  
-  return {
-    totalAlbums: Number(albumStats[0]?.total_albums || 0),
-    totalSections: Number(sectionStats[0]?.total_sections || 0),
-    totalPhotos: Number(albumStats[0]?.total_photos || 0),
-    totalVideos: Number(albumStats[0]?.total_videos || 0),
-    storageUsed: Number(userStats[0]?.storage_used || 0),
-    storageLimit: storageLimitFor(userStats[0]?.plan_type, userStats[0]?.storage_limit)
-  };
+  return http.get('/me/stats');
 }

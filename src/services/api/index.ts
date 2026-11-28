@@ -2,26 +2,25 @@ export * from './albums';
 export * from './sections';
 export * from './media';
 export * from './shares';
-export { 
-  registerUser, 
+export { ApiError, setUnauthorizedHandler } from './http';
+export {
+  registerUser,
   loginUser,
   loginWithGoogle,
-  getUserById, 
-  getUserByEmail, 
+  getSessionUser,
+  logoutSession,
+  getUserById,
   updateUserProfile,
   updateUserPlan,
-  updatePrivacySettings, 
-  changePassword, 
+  updatePrivacySettings,
+  changePassword,
   requestDataExport,
-  getDataExportStatus,
   requestAccountDeletion,
-  cancelAccountDeletion,
-  permanentlyDeleteUserAccount,
   getUserStats,
   type User as UserProfile,
   type RegisterInput,
   type LoginInput,
   type UpdateProfileInput,
-  type UpdatePrivacyInput
+  type UpdatePrivacyInput,
 } from './users';
-export { logAuditEvent, getUserAuditLogs, getAuditLogsByAction, AuditActions } from './audit';
+export { logAuditEvent, AuditActions } from './audit';

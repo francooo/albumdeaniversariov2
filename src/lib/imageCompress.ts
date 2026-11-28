@@ -1,5 +1,5 @@
 /**
- * Compressão de imagens no navegador antes de gravar no banco (base64 no Postgres).
+ * Compressão de imagens no navegador antes do envio ao armazenamento de arquivos (Cloudflare R2).
  * Gera a versão principal (até 1600 px) e a miniatura (até 400 px), ambas JPEG.
  */
 export const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -7,11 +7,11 @@ export const ACCEPT_ATTR = ACCEPTED_IMAGE_TYPES.join(',');
 export const MAX_INPUT_BYTES = 15 * 1024 * 1024;
 
 export interface CompressedImage {
-  dataUrl: string;
-  thumbDataUrl: string;
+  blob: Blob;
+  thumbBlob: Blob;
   width: number;
   height: number;
-  /** Tamanho aproximado em bytes do que será armazenado (principal + miniatura). */
+  /** Tamanho em bytes do que será armazenado (principal + miniatura). */
   bytes: number;
 }
 
@@ -48,7 +48,7 @@ async function loadBitmap(file: Blob): Promise<{ source: CanvasImageSource; widt
   }
 }
 
-function render(source: CanvasImageSource, w: number, h: number, maxSide: number, quality: number) {
+async function render(source: CanvasImageSource, w: number, h: number, maxSide: number, quality: number) {
   const scale = Math.min(1, maxSide / Math.max(w, h));
   const cw = Math.max(1, Math.round(w * scale));
   const ch = Math.max(1, Math.round(h * scale));
@@ -62,37 +62,28 @@ function render(source: CanvasImageSource, w: number, h: number, maxSide: number
   ctx.fillRect(0, 0, cw, ch);
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(source, 0, 0, cw, ch);
-  return { dataUrl: canvas.toDataURL('image/jpeg', quality), width: cw, height: ch };
-}
-
-function dataUrlBytes(dataUrl: string) {
-  const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-  return Math.floor((b64.length * 3) / 4);
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  if (!blob) throw new ImageInputError('Seu navegador não conseguiu processar a imagem.');
+  return { blob, width: cw, height: ch };
 }
 
 export async function compressImage(file: Blob, opts: { maxSide?: number; thumbSide?: number; quality?: number } = {}): Promise<CompressedImage> {
   const { maxSide = 1600, thumbSide = 400, quality = 0.8 } = opts;
   const bmp = await loadBitmap(file);
   try {
-    const main = render(bmp.source, bmp.width, bmp.height, maxSide, quality);
-    const thumb = render(bmp.source, bmp.width, bmp.height, thumbSide, 0.72);
-    return {
-      dataUrl: main.dataUrl,
-      thumbDataUrl: thumb.dataUrl,
-      width: main.width,
-      height: main.height,
-      bytes: dataUrlBytes(main.dataUrl) + dataUrlBytes(thumb.dataUrl),
-    };
+    const main = await render(bmp.source, bmp.width, bmp.height, maxSide, quality);
+    const thumb = await render(bmp.source, bmp.width, bmp.height, thumbSide, 0.72);
+    return { blob: main.blob, thumbBlob: thumb.blob, width: main.width, height: main.height, bytes: main.blob.size + thumb.blob.size };
   } finally {
     bmp.close();
   }
 }
 
-/** Para avatares e capas avulsas: só uma versão, menor. */
-export async function compressSingle(file: Blob, maxSide = 512, quality = 0.82): Promise<string> {
+/** Para avatares: só uma versão, menor. */
+export async function compressSingle(file: Blob, maxSide = 512, quality = 0.82): Promise<Blob> {
   const bmp = await loadBitmap(file);
   try {
-    return render(bmp.source, bmp.width, bmp.height, maxSide, quality).dataUrl;
+    return (await render(bmp.source, bmp.width, bmp.height, maxSide, quality)).blob;
   } finally {
     bmp.close();
   }

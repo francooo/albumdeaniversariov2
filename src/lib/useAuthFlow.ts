@@ -17,7 +17,7 @@ export function useAuthFlow(setError: (msg: string) => void) {
     const pendingToken = sessionStorage.getItem('pending_album_token');
     if (pendingToken) {
       try {
-        await claimAlbumShare(pendingToken, user.id);
+        await claimAlbumShare(pendingToken);
         sessionStorage.removeItem('pending_album_token');
         navigate(`/album/publico/${pendingToken}`);
         return;
@@ -33,12 +33,8 @@ export function useAuthFlow(setError: (msg: string) => void) {
       setGoogleLoading(true);
       setError('');
       try {
-        const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-        });
-        if (!res.ok) throw new Error('Não conseguimos falar com o Google. Tente de novo.');
-        const g = await res.json();
-        const user = await loginWithGoogle({ googleId: g.sub, email: g.email, name: g.name, avatarUrl: g.picture });
+        // O servidor confere o token com o Google antes de abrir a sessão
+        const user = await loginWithGoogle(tokenResponse.access_token);
         await finish(user);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Não foi possível entrar com o Google.');
